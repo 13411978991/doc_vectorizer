@@ -66,3 +66,6 @@ query-db2.cjs
 
 # OS-generated
 desktop.ini
+
+# Local npm cache (left behind by offline installs)
+.npm-cache/

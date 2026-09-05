@@ -20,10 +20,12 @@ create table if not exists ai_provider_settings (
   updated_at text not null default current_timestamp
 );
 
--- Backfill from current .env-derived state if the table was empty.
--- The API and ingestion both read from this row first; if missing, the
--- runtime falls back to env values. So this insert is best-effort and
--- harmless if the user later re-saves from the UI.
+-- Backfill a neutral row if the table is empty so the API has a
+-- well-formed "missing config" placeholder to read on first launch.
+-- All URL / model fields are intentionally blank — the operator must
+-- configure them via the UI before any embedding or LLM call is made.
+-- Search-mode metadata keeps the previous shipped defaults so the
+-- UI does not display empty values.
 insert or ignore into ai_provider_settings (
   id, embedding_provider, embedding_base_url, embedding_model,
   embedding_dimensions, embedding_api_key, embedding_local_model_path,
@@ -32,15 +34,15 @@ insert or ignore into ai_provider_settings (
 ) values (
   'global',
   'api',
-  'https://api.302ai.cn/v1',
-  'text-embedding-3-large',
+  '',
+  '',
   1024,
   null,
   null,
-  'https://api.minimaxi.com/v1',
-  'MiniMax-M3',
+  '',
+  '',
   null,
   60000,
-  2,
+  0,
   '{"defaultSearchMode":"fast","defaultSearchTopK":10,"defaultChunkingMode":"heading_strict","chunkTokenLimit":512,"chunkOverlapTokens":100}'
 );

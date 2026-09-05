@@ -66,7 +66,7 @@ export function buildHttpServer(): ReturnType<typeof Fastify> {
     }
   });
 
-  // Watermark — inject a light diagonal "sunwoda audit" pattern into every
+  // Watermark — inject a light diagonal "sag" pattern into every
   // HTML response. Because this is a server-side onSend hook, it cannot be
   // removed by editing static web UI files. The watermark is a repeating
   // SVG background on the body element, styled as low-opacity diagonal
@@ -80,7 +80,7 @@ export function buildHttpServer(): ReturnType<typeof Fastify> {
     "width:100%;height:100%;",
     "pointer-events:none;",
     "z-index:99999;",
-    "background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='140'%3E%3Ctext x='0' y='70' fill='rgba(0,0,0,0.05)' font-size='16' font-family='sans-serif' transform='rotate(-30,140,70)'%3Esunwoda audit%3C/text%3E%3C/svg%3E\");",
+    "background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='140'%3E%3Ctext x='0' y='70' fill='rgba(0,0,0,0.05)' font-size='16' font-family='sans-serif' transform='rotate(-30,140,70)'%3Esag%3C/text%3E%3C/svg%3E\");",
     "background-repeat:repeat;",
     "}",
     "</style>"

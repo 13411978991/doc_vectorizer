@@ -482,7 +482,6 @@ function registerMcpTools(server: McpServer, opts: { scopedSourceId?: string } =
       recursive: z.boolean().optional(),
       filetypeFilter: z.object({
         whitelist: z.array(z.string()).optional(),
-        blacklist: z.array(z.string()).optional(),
         maxBytes: z.number().int().positive().optional()
       }).optional(),
       displayName: z.string().optional(),

@@ -110,6 +110,10 @@ describe("watcherMcpService — add_watched_folder", () => {
   });
 
   it("accepts and persists a filetypeFilter", async () => {
+    // The blacklist field was removed in v2 — only the whitelist +
+    // maxBytes combination should round-trip through the schema. We
+    // also confirm that legacy `ignore_patterns` storage is pinned to
+    // `[]` for new folders.
     const dir = await mkdtemp(join(tmpdir(), "wf-mcp-filter-"));
     try {
       const result = await watcherMcpService.addWatchedFolder({
@@ -117,7 +121,6 @@ describe("watcherMcpService — add_watched_folder", () => {
         tenantId: TENANT,
         filetypeFilter: {
           whitelist: [".md"],
-          blacklist: [".tmp"],
           maxBytes: 1024 * 1024
         }
       });
@@ -129,11 +132,13 @@ describe("watcherMcpService — add_watched_folder", () => {
         const row0 = row.rows[0] as { file_extensions_filter: string; ignore_patterns: string; metadata: string };
         const ff = {
           whitelist: JSON.parse(row0.file_extensions_filter),
-          blacklist: JSON.parse(row0.ignore_patterns),
+          ignorePatterns: JSON.parse(row0.ignore_patterns),
           maxBytes: (JSON.parse(row0.metadata) as { maxBytes: number }).maxBytes
         };
         expect(ff.whitelist).toEqual([".md"]);
-        expect(ff.blacklist).toEqual([".tmp"]);
+        // The blacklist column is kept for backward compatibility but is
+        // pinned to [] on every write since v2.
+        expect(ff.ignorePatterns).toEqual([]);
         expect(ff.maxBytes).toBe(1024 * 1024);
       } finally {
         await watcherManager.stopOne(result.folderId);

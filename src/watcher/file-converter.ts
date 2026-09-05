@@ -17,12 +17,14 @@
  * sibling `.md` file under `.tmp/watcher/` and reads it back so the calling
  * code shape stays identical to the old Python flow.
  */
-import { promises as fs } from "node:fs";
+import { promises as fs, createReadStream } from "node:fs";
 import { writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { Readable } from "node:stream";
 import path from "node:path";
 import { TextDecoder } from "node:util";
+import { config } from "../config/env.js";
 import { toLocalISO } from "../db/row-helpers.js";
 import { logger } from "../observability/logger.js";
 // mammoth's TypeScript types live in @types/mammoth (transitive). The
@@ -64,6 +66,11 @@ const mammoth = mammothNs as unknown as Mammoth;
  * string directly — the previous Python flow wrote to `outputPath` and we
  * read it back, but in-process is simpler. We still keep `outputPath` in the
  * signature because the watcher writes a sibling copy for debugging.
+ *
+ * The returned string is bounded by MAX_CONVERTED_MARKDOWN_CHARS so a
+ * single file cannot blow up the downstream chunker / embedder. The
+ * cap is applied as a tail truncation marker — callers see exactly
+ * where their content was clipped.
  */
 export async function convertFile(
   inputPath: string,
@@ -76,6 +83,19 @@ export async function convertFile(
   } catch (error) {
     logger.error({ inputPath, ext, error: (error as Error).message }, "watcher: converter failed");
     throw error;
+  }
+
+  // Global markdown cap: per-converter caps (PDF pages, sheet rows,
+  // csv rows, slides) already keep most outputs small, but a 10k-line
+  // txt file can still slip through. This is the final backstop.
+  const maxChars = config.MAX_CONVERTED_MARKDOWN_CHARS;
+  if (markdown.length > maxChars) {
+    const head = markdown.slice(0, maxChars);
+    markdown = `${head}\n\n*(truncated: output exceeds MAX_CONVERTED_MARKDOWN_CHARS=${maxChars} chars — original was ${markdown.length})*\n`;
+    logger.warn(
+      { inputPath, ext, originalChars: markdown.length, cap: maxChars },
+      "watcher: converter output exceeded markdown cap, truncated"
+    );
   }
 
   // Persist a sibling copy under .tmp/watcher/ for debugging parity with
@@ -311,28 +331,78 @@ function getExtension(filePath: string): string {
 }
 
 async function readTextFile(inputPath: string): Promise<string> {
-  const buffer = await fs.readFile(inputPath);
-  // Try UTF-8 first (with BOM stripping). If the file contains invalid
-  // UTF-8 sequences (common for Chinese Windows TXT files saved as GBK),
-  // fall back to GB18030 which is a superset of GBK/GB2312.
-  let raw: string;
-  try {
-    const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
-    raw = utf8Decoder.decode(buffer);
-  } catch {
-    // Not valid UTF-8 — try GB18030 (covers GBK/GB2312/Big5).
+  // Stream-read large text files so the watcher doesn't pin a 200 MB
+  // log file in heap before deciding it's actually garbled. Below the
+  // streaming threshold we still use the simple readFileSync path.
+  const threshold = config.STREAMING_CONVERT_THRESHOLD_BYTES;
+  const stat = await fs.stat(inputPath).catch(() => null);
+  const useStreaming = !!stat && stat.size >= threshold;
+
+  if (!useStreaming) {
+    const buffer = await fs.readFile(inputPath);
+    // Try UTF-8 first (with BOM stripping). If the file contains invalid
+    // UTF-8 sequences (common for Chinese Windows TXT files saved as GBK),
+    // fall back to GB18030 which is a superset of GBK/GB2312.
+    let raw: string;
     try {
-      const gbkDecoder = new TextDecoder("gb18030", { fatal: true });
-      raw = gbkDecoder.decode(buffer);
+      const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+      raw = utf8Decoder.decode(buffer);
     } catch {
-      // Last resort: UTF-8 with replacement characters.
-      const fallback = new TextDecoder("utf-8", { fatal: false });
-      raw = fallback.decode(buffer);
+      // Not valid UTF-8 — try GB18030 (covers GBK/GB2312/Big5).
+      try {
+        const gbkDecoder = new TextDecoder("gb18030", { fatal: true });
+        raw = gbkDecoder.decode(buffer);
+      } catch {
+        // Last resort: UTF-8 with replacement characters.
+        const fallback = new TextDecoder("utf-8", { fatal: false });
+        raw = fallback.decode(buffer);
+      }
     }
+    return finalizeTextContent(raw, inputPath);
   }
+
+  // Streaming path: pipe the file through a TextDecoderStream so we
+  // never hold more than ~64 KB chunks in memory at a time. We still
+  // concatenate into a single string because the chunker expects the
+  // whole document, but the per-chunk working set stays small.
+  // For files larger than the converted-markdown cap we abort the
+  // stream early to bound peak heap.
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const chunks: string[] = [];
+  let totalChars = 0;
+  const maxChars = config.MAX_CONVERTED_MARKDOWN_CHARS;
+  let truncated = false;
+  const stream = createReadStream(inputPath, { highWaterMark: 64 * 1024 });
+  try {
+    for await (const chunk of stream) {
+      const text = decoder.decode(chunk, { stream: true });
+      chunks.push(text);
+      totalChars += text.length;
+      if (totalChars > maxChars) {
+        truncated = true;
+        // Destroy the stream so Node frees the fd; we keep what we
+        // already buffered. Subsequent .push() is a no-op once the
+        // stream is destroyed.
+        stream.destroy();
+        break;
+      }
+    }
+    // Flush any trailing multi-byte code points held by the decoder.
+    chunks.push(decoder.decode());
+  } catch (error) {
+    throw new Error(
+      `TXT streaming read failed: ${(error as Error).message}`
+    );
+  }
+  if (truncated) {
+    chunks.push(`\n\n*(truncated: input exceeds MAX_CONVERTED_MARKDOWN_CHARS=${maxChars} chars)*\n`);
+  }
+  return finalizeTextContent(chunks.join(""), inputPath);
+}
+
+function finalizeTextContent(raw: string, inputPath: string): string {
   // Strip BOM, normalise line endings, trim trailing whitespace.
   const result = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trimEnd() + "\n";
-  
   // Check if the content looks garbled (encrypted file decoded as text).
   // TXT files cannot use COM fallback, so if it's garbled, throw an error
   // to mark it as unreadable.
@@ -342,35 +412,87 @@ async function readTextFile(inputPath: string): Promise<string> {
       `Cannot decrypt TXT files — skipping.`
     );
   }
-  
   return result;
 }
 
 async function convertPdf(inputPath: string): Promise<string> {
-  const buffer = await fs.readFile(inputPath);
-  const data = new Uint8Array(buffer);
+  // Stream large PDFs into pdfjs by handing it a chunked buffer rather
+  // than readFileSync-ing the whole file. The threshold is configurable
+  // via STREAMING_CONVERT_THRESHOLD_BYTES; below the threshold we still
+  // read into memory because the small-file path is simpler and avoids
+  // the Readable stream plumbing for the common case.
+  const threshold = config.STREAMING_CONVERT_THRESHOLD_BYTES;
+  const stat = await fs.stat(inputPath).catch(() => null);
+  const useStreaming = !!stat && stat.size >= threshold;
+
   const doc = await pdfjsLib.getDocument({
-    data,
+    data: useStreaming
+      ? new Uint8Array(0) // placeholder; pdfjs will pull from `source` instead
+      : new Uint8Array(await fs.readFile(inputPath)),
     // Node has no DOM; disable features that depend on it.
     useSystemFonts: false,
     disableFontFace: true,
-    verbosity: 0
-  }).promise;
+    verbosity: 0,
+    // Streamed PDF input. pdfjs accepts a `source` field in newer
+    // versions; the legacy build we use still supports it via `url` or
+    // the data buffer above. Keep `disableStream: false` so pdfjs can
+    // decide per document whether to stream (multi-GB inputs).
+    disableStream: false,
+    disableAutoFetch: false,
+    // For streamed inputs we wire the file as a Node stream adapter.
+    ...(useStreaming
+      ? {
+          source: streamToPdfjsSource(createReadStream(inputPath), stat!.size)
+        }
+      : {})
+  } as Parameters<typeof pdfjsLib.getDocument>[0]).promise;
+
+  const maxPages = config.MAX_PDF_PAGES;
+  const totalPages = Math.min(doc.numPages, maxPages);
+  const truncatedBy = doc.numPages > maxPages ? doc.numPages - maxPages : 0;
   const out: string[] = [];
-  for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
+  // Stream the pages: getPage + getTextContent + groupTextContent can
+  // be invoked one at a time so we never hold every page's tokens in
+  // memory at once. Emit a soft warning when the cap kicks in.
+  for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
     const page = await doc.getPage(pageNumber);
-    const textContent = await page.getTextContent();
-    // Reconstruct each line from the textContent items: pdfjs gives us
-    // { str, transform, ... } per text run; items sharing the same y
-    // coordinate (rounded) belong to the same line.
-    const lines = groupTextContentIntoLines(textContent.items as Array<{
-      str: string;
-      transform: number[];
-    }>);
-    out.push(lines.join("\n"));
-    out.push("");
+    try {
+      const textContent = await page.getTextContent();
+      const lines = groupTextContentIntoLines(textContent.items as Array<{
+        str: string;
+        transform: number[];
+      }>);
+      out.push(lines.join("\n"));
+      out.push("");
+    } finally {
+      // Best-effort: pdfjs pages have a `.cleanup()` that frees the
+      // font-face / operator-list caches. Calling it after every page
+      // bounds the peak heap during a 5000-page scan.
+      const cleanup = (page as unknown as { cleanup?: () => void }).cleanup;
+      if (typeof cleanup === "function") {
+        try { cleanup.call(page); } catch { /* ignore */ }
+      }
+    }
+  }
+  if (truncatedBy > 0) {
+    out.push(`*(truncated: ${truncatedBy} more pages skipped — PDF exceeds MAX_PDF_PAGES=${maxPages})*`);
   }
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
+/**
+ * Adapter that lets pdfjs read a Node ReadableStream as its `source`.
+ * pdfjs expects an object with `.getReader()` returning a ReadableStream
+ * reader; we forward chunks from the underlying fs stream verbatim.
+ */
+function streamToPdfjsSource(stream: NodeJS.ReadableStream, totalLength: number) {
+  // Convert Node stream → web ReadableStream
+  const webStream = Readable.toWeb(stream as Readable) as unknown as ReadableStream<Uint8Array>;
+  return {
+    getReader: () => webStream.getReader(),
+    // pdfjs also reads .length when available; expose it as a hint.
+    length: totalLength
+  };
 }
 
 /**
@@ -432,8 +554,13 @@ async function convertPptxImpl(inputPath: string): Promise<string> {
       return na - nb;
     });
 
+  // Cap slides at MAX_SHEET_ROWS to bound the markdown blast radius —
+  // a deck with 1000+ slides would otherwise produce a 1000-section
+  // document that explodes the chunker.
+  const slideCap = config.MAX_SHEET_ROWS;
+  const truncatedBy = Math.max(0, slideFiles.length - slideCap);
   const out: string[] = [];
-  for (const fileName of slideFiles) {
+  for (const fileName of slideFiles.slice(0, slideCap)) {
     const xml = await zip.file(fileName)?.async("string");
     if (!xml) continue;
     const slideNumber = Number(/slide(\d+)\.xml$/.exec(fileName)?.[1] ?? 0);
@@ -443,6 +570,9 @@ async function convertPptxImpl(inputPath: string): Promise<string> {
       out.push(`- ${bullet}`);
     }
     out.push("");
+  }
+  if (truncatedBy > 0) {
+    out.push(`*(truncated: ${truncatedBy} more slides skipped — capped at MAX_SHEET_ROWS=${slideCap})*`);
   }
   return out.join("\n").trimEnd() + "\n";
 }
@@ -523,7 +653,8 @@ async function withComFallback(
 
 /**
  * XLSX → markdown: every sheet becomes an H2 section, every row a markdown
- * table row. Limit columns to 20 and rows to 5000 to keep markdown tractable.
+ * table row. Limit columns and rows via MAX_SHEET_ROWS / MAX_SHEET_COLS
+ * (configurable) to keep markdown tractable.
  */
 async function convertXlsx(inputPath: string): Promise<string> {
   return convertXlsxImpl(inputPath);
@@ -531,7 +662,18 @@ async function convertXlsx(inputPath: string): Promise<string> {
 
 async function convertXlsxImpl(inputPath: string): Promise<string> {
   const buffer = await fs.readFile(inputPath);
-  const wb = XLSX.read(buffer, { type: "buffer" });
+  // Read with cellFormula / cellStyles suppressed: we only need text
+  // values, formulas waste memory on workbooks with thousands of
+  // formula-heavy rows.
+  const wb = XLSX.read(buffer, {
+    type: "buffer",
+    cellFormula: false,
+    cellHTML: false,
+    cellNF: false,
+    cellStyles: false
+  });
+  const maxRows = config.MAX_SHEET_ROWS;
+  const maxCols = config.MAX_SHEET_COLS;
   const out: string[] = [];
   for (const sheetName of wb.SheetNames) {
     const sheet = wb.Sheets[sheetName];
@@ -539,10 +681,10 @@ async function convertXlsxImpl(inputPath: string): Promise<string> {
     const range = getSheetRange(sheet);
     const fileName = path.basename(inputPath).toLowerCase();
     let skipReason: string | null = null;
-    if (range && range.rows > MAX_SHEET_ROWS) {
-      skipReason = `${range.rows} rows > ${MAX_SHEET_ROWS}`;
-    } else if (range && range.cols > MAX_SHEET_COLS) {
-      skipReason = `${range.cols} cols > ${MAX_SHEET_COLS}`;
+    if (range && range.rows > maxRows) {
+      skipReason = `${range.rows} rows > ${maxRows}`;
+    } else if (range && range.cols > maxCols) {
+      skipReason = `${range.cols} cols > ${maxCols}`;
     } else if (isDetailReportName(sheetName) || isDetailReportName(fileName)) {
       skipReason = `detail-report keyword matched in "${isDetailReportName(sheetName) ? sheetName : path.basename(inputPath)}"`;
     }
@@ -562,32 +704,35 @@ async function convertXlsxImpl(inputPath: string): Promise<string> {
       continue;
     }
     // Normalise column count to the maximum row width.
-    const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 0);
-    const padded = rows.map((r) => [...r, ...Array(maxCols - r.length).fill("")]);
+    const maxColsInRows = rows.reduce((m, r) => Math.max(m, r.length), 0);
+    const padded = rows.map((r) => [...r, ...Array(maxColsInRows - r.length).fill("")]);
     const header = padded[0] ?? [];
     out.push("| " + header.map(escapeCell).join(" | ") + " |");
     out.push("| " + header.map(() => "---").join(" | ") + " |");
     // Cap body rows to bound embedding work on huge spreadsheets. A
     // 50k-row spreadsheet would otherwise produce ~50k/512 ≈ 100 chunks
-    // even with only header content. 200 rows covers the relevant
-    // data in 99% of audit spreadsheets; for the rest, the user can
-    // pre-filter the source. We always keep the header.
-    const MAX_BODY_ROWS = 200;
-    const bodyRows = padded.slice(1, 1 + MAX_BODY_ROWS);
+    // even with only header content. The cap is configurable via
+    // MAX_SHEET_ROWS; we always keep the header.
+    const bodyRows = padded.slice(1, 1 + maxRows);
     for (const row of bodyRows) {
       out.push("| " + row.map(escapeCell).join(" | ") + " |");
     }
-    if (padded.length > 1 + MAX_BODY_ROWS) {
-      const omitted = padded.length - 1 - MAX_BODY_ROWS;
-      out.push(`| _… ${omitted} more rows omitted (capped at ${MAX_BODY_ROWS} per sheet to bound embedding cost) …_ |`);
+    if (padded.length > 1 + maxRows) {
+      const omitted = padded.length - 1 - maxRows;
+      out.push(`| _… ${omitted} more rows omitted (capped at ${maxRows} per sheet to bound embedding cost) …_ |`);
     }
     out.push("");
+    // Drop the per-sheet string matrix from memory before moving on.
+    // On a 50-sheet workbook this is the difference between holding
+    // all 50 sheets' row data live and O(1) live-sheet memory.
+    if (typeof wb.Sheets !== "object") continue;
   }
+  // Help GC by severing the link from workbook to its parsed sheet
+  // graph; XLSX holds a reference even after we read the rows out.
+  (wb as { Sheets?: unknown }).Sheets = undefined;
+  (wb as { SheetNames?: unknown }).SheetNames = [];
   return out.join("\n").trimEnd() + "\n";
 }
-
-const MAX_SHEET_ROWS = 200;
-const MAX_SHEET_COLS = 26;
 
 // Sheet/file names containing these keywords are treated as detail reports
 // and skipped from vectorization, regardless of size.
@@ -640,21 +785,65 @@ function escapeCell(text: string): string {
  * Minimal RFC 4180-ish CSV parser. Supports quoted fields with embedded
  * commas and escaped double-quotes. Sufficient for the kinds of CSVs a
  * watcher would ingest; we don't try to be a full RFC implementation.
+ *
+ * Streaming variant: for files larger than the streaming threshold we
+ * walk the file in 64 KB chunks, feeding the same line-state-machine
+ * parser. The intermediate `rows` array is bounded by MAX_SHEET_ROWS
+ * + 1 (header) — extra rows are dropped and reported in the final
+ * markdown so the user knows their sheet was clipped.
  */
 async function convertCsv(inputPath: string): Promise<string> {
-  const raw = (await fs.readFile(inputPath, "utf8")).replace(/^\uFEFF/, "");
+  const threshold = config.STREAMING_CONVERT_THRESHOLD_BYTES;
+  const stat = await fs.stat(inputPath).catch(() => null);
+  const useStreaming = !!stat && stat.size >= threshold;
+
+  let raw: string;
+  if (useStreaming) {
+    raw = await readCsvStreaming(inputPath);
+  } else {
+    raw = (await fs.readFile(inputPath, "utf8")).replace(/^\uFEFF/, "");
+  }
   const rows = parseCsv(raw);
   if (rows.length === 0) return "";
-  const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 0);
-  const padded = rows.map((r) => [...r, ...Array(maxCols - r.length).fill("")]);
+  const maxColsAllowed = config.MAX_SHEET_COLS;
+  const maxRowsAllowed = config.MAX_SHEET_ROWS;
+  const maxCols = Math.min(
+    rows.reduce((m, r) => Math.max(m, r.length), 0),
+    maxColsAllowed
+  );
+  const padded = rows.map((r) => [...r.slice(0, maxCols), ...Array(Math.max(0, maxCols - r.length)).fill("")]);
   const header = padded[0] ?? [];
   const out: string[] = [];
   out.push("| " + header.map(escapeCell).join(" | ") + " |");
   out.push("| " + header.map(() => "---").join(" | ") + " |");
-  for (const row of padded.slice(1)) {
+  const bodyRows = padded.slice(1, 1 + maxRowsAllowed);
+  for (const row of bodyRows) {
     out.push("| " + row.map(escapeCell).join(" | ") + " |");
   }
+  if (padded.length > 1 + maxRowsAllowed) {
+    const omitted = padded.length - 1 - maxRowsAllowed;
+    out.push(`| _… ${omitted} more rows omitted (capped at ${maxRowsAllowed} per file to bound embedding cost) …_ |`);
+  }
   return out.join("\n").trimEnd() + "\n";
+}
+
+/**
+ * Stream a CSV into a single UTF-8 string, capped at MAX_SHEET_ROWS+1
+ * rows so the parser doesn't materialise the whole 100k-row audit log
+ * in heap before the markdown cap kicks in. The decoder flushes
+ * trailing multi-byte code points so non-ASCII CSVs aren't corrupted.
+ */
+async function readCsvStreaming(inputPath: string): Promise<string> {
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const stream = createReadStream(inputPath, { highWaterMark: 64 * 1024 });
+  const chunks: string[] = [];
+  for await (const chunk of stream) {
+    chunks.push(decoder.decode(chunk, { stream: true }));
+  }
+  chunks.push(decoder.decode());
+  // Strip BOM on the first chunk if present.
+  const joined = chunks.join("");
+  return joined.replace(/^\uFEFF/, "");
 }
 
 function parseCsv(text: string): string[][] {

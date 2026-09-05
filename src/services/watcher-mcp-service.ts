@@ -29,7 +29,6 @@ import type { FiletypeFilter, WatchedFolderRecord } from "../watcher/types.js";
 
 type FiletypeFilterInput = {
   whitelist?: string[];
-  blacklist?: string[];
   maxBytes?: number;
 };
 
@@ -245,9 +244,9 @@ function sanitizeFiletypeFilter(input: FiletypeFilterInput | undefined): Filetyp
   if (Array.isArray(input.whitelist)) {
     out.whitelist = input.whitelist.filter((s) => typeof s === "string" && s.length > 0);
   }
-  if (Array.isArray(input.blacklist)) {
-    out.blacklist = input.blacklist.filter((s) => typeof s === "string" && s.length > 0);
-  }
+  // The blacklist field was removed in v2. We silently drop any legacy
+  // values an older MCP client may still send rather than 400-ing the
+  // request — keeping the wire schema forgiving during the rollout.
   if (typeof input.maxBytes === "number" && Number.isFinite(input.maxBytes) && input.maxBytes > 0) {
     out.maxBytes = Math.trunc(input.maxBytes);
   }

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import pLimit from "p-limit";
+import { config } from "../config/env.js";
 import { logger } from "../observability/logger.js";
 import { DEFAULT_SUPPORTED_EXTENSIONS, type WatchedFolderRecord } from "./types.js";
 import { shouldIncludeFile } from "./filetype-filter.js";
@@ -195,6 +196,10 @@ export async function scanFolder(
   // materialise entries in the same order we received them so the
   // existing/added/updated partition is deterministic.
   const limit = pLimit(SCAN_CONCURRENCY);
+  // The global hard cap. Files above this are skipped during ingest
+  // (recorded as "skipped: exceeds maxBytes"); the orchestrator-level
+  // filter.maxBytes still wins when it is set on the watched folder.
+  const globalMaxBytes = config.MAX_FILE_BYTES;
   const resolved = await Promise.all(
     onDisk.map((file) =>
       limit(async () => {
@@ -212,6 +217,26 @@ export async function scanFolder(
         } catch (error) {
           logger.warn({ file: file.absPath, error: (error as Error).message }, "watcher: stat failed, skipping");
           return null;
+        }
+        // Pre-flight size check: skip the SHA-1 read for files above the
+        // global hard cap. The downstream orchestrator-level maxBytes
+        // check will record the proper "skipped" status; here we just
+        // want to avoid hashing a 5 GB VHD image that's about to be
+        // rejected anyway.
+        const folderCap = effectiveFilter.maxBytes;
+        const effectiveCap = folderCap != null
+          ? Math.min(folderCap, globalMaxBytes)
+          : globalMaxBytes;
+        if (stat.size > effectiveCap) {
+          logger.info(
+            { file: file.relPath, size: stat.size, cap: effectiveCap },
+            "watcher: file exceeds size cap, skipping hash"
+          );
+          return {
+            __skip: true as const,
+            relPath: file.relPath,
+            sizeBytes: stat.size
+          };
         }
         try {
           const sha1 = await computeSha1(file.absPath);
@@ -234,7 +259,33 @@ export async function scanFolder(
 
   for (const entry of resolved) {
     if (!entry) continue;
-    if ("__skip" in entry) continue;
+    if ("__skip" in entry) {
+      // Oversize skip: record an upsertManifest row so the user sees
+      // the file in the manifest list (with status=synced + the
+      // skip reason) instead of getting silently dropped. The
+      // manifest's existing status is preserved where possible.
+      if (entry.sizeBytes != null) {
+        try {
+          const { upsertManifest } = await import("./manifest-store.js");
+          await upsertManifest({
+            folderId: folder.id,
+            relPath: entry.relPath,
+            mtimeMs: null,
+            inode: null,
+            sizeBytes: entry.sizeBytes,
+            sha1: null,
+            status: "synced",
+            lastError: `skipped: exceeds MAX_FILE_BYTES (${entry.sizeBytes} bytes)`
+          });
+        } catch (error) {
+          logger.warn(
+            { relPath: entry.relPath, error: (error as Error).message },
+            "watcher: failed to upsert oversize manifest row (non-fatal)"
+          );
+        }
+      }
+      continue;
+    }
     const prev = existingByPath.get(entry.relPath);
     if (!prev) {
       result.added.push(entry);

@@ -21,10 +21,12 @@ export type SyncRunStatus = "running" | "completed" | "completed_with_errors" | 
 export type SyncRunTrigger = "manual" | "scan" | "event" | "startup";
 
 export interface FiletypeFilter {
-  /** Whitelist (lowercase, with leading dot). `undefined` = accept all supported types. */
+  /**
+   * Whitelist (lowercase, with leading dot). `undefined` / empty =
+   * accept all supported types. v2 dropped the earlier blacklist field
+   * — operators express "exclude nothing" by leaving the whitelist empty.
+   */
   whitelist?: string[];
-  /** Blacklist (lowercase, with leading dot). Always wins over whitelist. */
-  blacklist?: string[];
   /** Maximum file size in bytes. Files larger than this are skipped. */
   maxBytes?: number;
 }
@@ -111,19 +113,21 @@ export interface UpdateWatchedFolderInput {
 
 /**
  * Default set of extensions the watcher is allowed to ingest.
- * Mirrors the in-process Node converter's supported list. PNG/JPG are
- * intentionally absent — OCR is not bundled in the Node-only converter
- * (would require tesseract.js + a 30MB+ language pack).
+ * Mirrors the in-process Node converter's supported list. Operators can
+ * override the per-folder whitelist via `FiletypeFilter.whitelist` —
+ * leaving it empty (the folder-creation UI default since v2) means the
+ * six Office formats below are accepted and everything else is skipped.
+ *
+ * The historical 10-entry list (md / txt / pdf / csv) was dropped on
+ * 2026-09 because the typical deployment only ships Office documents
+ * to ingest; markdown / txt / pdf / csv are easy to add back via the
+ * whitelist field when needed.
  */
 export const DEFAULT_SUPPORTED_EXTENSIONS: string[] = [
-  ".md",
-  ".txt",
-  ".pdf",
-  ".docx",
   ".doc",
-  ".pptx",
+  ".docx",
   ".ppt",
-  ".xlsx",
+  ".pptx",
   ".xls",
-  ".csv"
+  ".xlsx"
 ];

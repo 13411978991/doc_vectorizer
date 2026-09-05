@@ -68,11 +68,11 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
 
   /**
    * Conservative per-batch input budget. Different embedding endpoints
-   * have different context windows (text-embedding-3-large is 8192,
-   * qwen3-embedding-8b is 4096); we use 3500 as a safe common value
-   * regardless of the configured model. The estimate is by `length/2`
-   * (roughly 2 chars per token for English; CJK is denser but our
-   * chunks are mixed-language and the budget is generous).
+   * have different context windows (popular public models range from
+   * 2k to 32k tokens); we use 2000 as a safe common value regardless
+   * of the configured model. The estimate is by `length/2` (roughly
+   * 2 chars per token for English; CJK is denser but our chunks are
+   * mixed-language and the budget is generous).
    */
   private static readonly BATCH_TOKEN_BUDGET = 2000;
 
@@ -753,7 +753,7 @@ export async function warmupLocalBgeWorker(modelPath: string): Promise<void> {
   }
 }
 
-async function localBgeEmbeddingInProcess(
+export async function localBgeEmbeddingInProcess(
   modelPath: string,
   texts: string[],
   dimensions: number

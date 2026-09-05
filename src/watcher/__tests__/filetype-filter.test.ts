@@ -31,22 +31,6 @@ describe("getExtension", () => {
   });
 });
 
-describe("shouldIncludeFile — blacklist priority", () => {
-  it("excludes blacklisted extensions even if also in whitelist", () => {
-    const result = shouldIncludeFile("foo.csv", {
-      whitelist: [".csv", ".txt"],
-      blacklist: [".csv"]
-    });
-    expect(result.include).toBe(false);
-    expect(result.reason).toMatch(/blacklist/i);
-  });
-
-  it("matches blacklist case-insensitively", () => {
-    const result = shouldIncludeFile("PHOTO.JPG", { blacklist: [".jpg"] });
-    expect(result.include).toBe(false);
-  });
-});
-
 describe("shouldIncludeFile — whitelist behavior", () => {
   it("includes when extension is in whitelist", () => {
     expect(shouldIncludeFile("a.md", { whitelist: [".md", ".txt"] }).include).toBe(true);
@@ -65,7 +49,7 @@ describe("shouldIncludeFile — whitelist behavior", () => {
   });
 });
 
-describe("shouldIncludeFile — no whitelist/blacklist", () => {
+describe("shouldIncludeFile — no whitelist", () => {
   it("includes everything when no filter is configured", () => {
     expect(shouldIncludeFile("a.pdf", {}).include).toBe(true);
     expect(shouldIncludeFile("README", {}).include).toBe(true);
@@ -74,18 +58,53 @@ describe("shouldIncludeFile — no whitelist/blacklist", () => {
   it("includes everything when only an empty whitelist is set", () => {
     expect(shouldIncludeFile("a.pdf", { whitelist: [] }).include).toBe(true);
   });
-
-  it("includes everything when only an empty blacklist is set", () => {
-    expect(shouldIncludeFile("a.pdf", { blacklist: [] }).include).toBe(true);
-  });
 });
 
 describe("shouldIncludeFile — extension normalization", () => {
   it("accepts whitelist entries without leading dot", () => {
     expect(shouldIncludeFile("a.md", { whitelist: ["md"] }).include).toBe(true);
   });
+});
 
-  it("accepts blacklist entries without leading dot", () => {
-    expect(shouldIncludeFile("a.md", { blacklist: ["md"] }).include).toBe(false);
+describe("shouldIncludeFile — office document whitelist (default)", () => {
+  // The watcher ships with a six-format default whitelist (xls/xlsx/
+  // doc/docx/ppt/pptx). These cases guard that decision — adding a
+  // non-office type to the whitelist should be a deliberate operator
+  // action via the watched-folder UI.
+  const defaultWhitelist = [".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"];
+
+  it("accepts all six office formats", () => {
+    expect(shouldIncludeFile("a.DOC", { whitelist: defaultWhitelist }).include).toBe(true);
+    expect(shouldIncludeFile("a.DOCX", { whitelist: defaultWhitelist }).include).toBe(true);
+    expect(shouldIncludeFile("a.PPT", { whitelist: defaultWhitelist }).include).toBe(true);
+    expect(shouldIncludeFile("a.PPTX", { whitelist: defaultWhitelist }).include).toBe(true);
+    expect(shouldIncludeFile("a.XLS", { whitelist: defaultWhitelist }).include).toBe(true);
+    expect(shouldIncludeFile("a.XLSX", { whitelist: defaultWhitelist }).include).toBe(true);
+  });
+
+  it("rejects markdown / pdf / txt / csv by default", () => {
+    expect(shouldIncludeFile("a.md", { whitelist: defaultWhitelist }).include).toBe(false);
+    expect(shouldIncludeFile("a.pdf", { whitelist: defaultWhitelist }).include).toBe(false);
+    expect(shouldIncludeFile("a.txt", { whitelist: defaultWhitelist }).include).toBe(false);
+    expect(shouldIncludeFile("a.csv", { whitelist: defaultWhitelist }).include).toBe(false);
+  });
+});
+
+describe("shouldIncludeFile — lockfile-style names", () => {
+  it("rejects Office temp files (basename starts with ~)", () => {
+    const result = shouldIncludeFile("/tmp/~$报告.docx", { whitelist: [".docx"] });
+    expect(result.include).toBe(false);
+    expect(result.reason).toMatch(/lock file/i);
+  });
+
+  it("rejects lockfiles regardless of whitelist contents", () => {
+    expect(shouldIncludeFile("~$audit.xlsx", {}).include).toBe(false);
+  });
+
+  it("does not reject a folder name starting with ~", () => {
+    // The tilde rule only applies to the basename; a folder called
+    // "~backup/report.docx" should still be ingested.
+    const result = shouldIncludeFile("/home/u/~backup/report.docx", { whitelist: [".docx"] });
+    expect(result.include).toBe(true);
   });
 });

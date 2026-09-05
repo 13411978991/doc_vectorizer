@@ -37,6 +37,7 @@ import type {
   WatchedFolderRecord,
   WatcherHealth
 } from "../../types";
+import { DEFAULT_OFFICE_WHITELIST } from "../../types";
 
 // === View types ===
 type WorkspaceSubView = "list" | "new" | "details";
@@ -47,16 +48,21 @@ type FolderCreateDraft = {
   displayName: string;
   recursive: boolean;
   whitelist: string;
-  blacklist: string;
   maxBytes: string;
 };
+
+/**
+ * Default whitelist shown in the wizard — the six Office formats the
+ * watcher ships with out of the box. Operators can edit / clear it
+ * in step 2; whatever they leave becomes the persisted filter.
+ */
+const DEFAULT_WHITELIST_TEXT = DEFAULT_OFFICE_WHITELIST.join(", ");
 
 const EMPTY_DRAFT: FolderCreateDraft = {
   path: "",
   displayName: "",
   recursive: true,
-  whitelist: "",
-  blacklist: "",
+  whitelist: DEFAULT_WHITELIST_TEXT,
   maxBytes: ""
 };
 
@@ -78,15 +84,16 @@ function parseMaxBytesInput(input: string): number | undefined {
 }
 
 function buildFiletypeFilter(draft: FolderCreateDraft): FiletypeFilter | undefined {
+  // v2: only whitelist + maxBytes drive the filter. An empty whitelist
+  // means "no extension gate" (every file the analyzer discovers is
+  // ingested, subject to maxBytes).
   const whitelist = parseExtensionsInput(draft.whitelist);
-  const blacklist = parseExtensionsInput(draft.blacklist);
   const maxBytes = parseMaxBytesInput(draft.maxBytes);
-  if (whitelist.length === 0 && blacklist.length === 0 && maxBytes == null) {
+  if (whitelist.length === 0 && maxBytes == null) {
     return undefined;
   }
   const filter: FiletypeFilter = {};
   if (whitelist.length > 0) filter.whitelist = whitelist;
-  if (blacklist.length > 0) filter.blacklist = blacklist;
   if (maxBytes != null) filter.maxBytes = maxBytes;
   return filter;
 }
@@ -978,10 +985,10 @@ function StepPath(props: {
         <Input
           value={props.draft.displayName}
           onChange={(event) => props.onChange("displayName", event.target.value)}
-          placeholder={t("如：IT 审计 · 制度文档库", "e.g. IT audit · policy library")}
+          placeholder={t("如：制度文档库 · 2025", "e.g. policy library · 2025")}
         />
         <p className="mt-1 text-[11px] text-muted-foreground/80">
-          {t("命名参考：审计领域 + 内容类型，如「财务审计 · 凭证扫描件」。留空则用文件夹名。", "Naming tip: audit domain + content type, e.g. \"Finance audit · vouchers\". Defaults to the folder name.")}
+          {t("命名参考：业务领域 + 内容类型，如「财务部 · 凭证扫描件」。留空则用文件夹名。", "Naming tip: domain + content type, e.g. \"Finance · vouchers\". Defaults to the folder name.")}
         </p>
       </Field>
       <label className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1004,6 +1011,7 @@ function StepFilter(props: {
   onChange: <K extends keyof FolderCreateDraft>(key: K, value: FolderCreateDraft[K]) => void;
 }) {
   const { t } = useI18n();
+  const defaultsText = DEFAULT_OFFICE_WHITELIST.join(", ");
   return (
     <div className="space-y-3">
       <Field label={t("白名单后缀（逗号分隔，留空表示接受全部）", "Whitelist extensions (comma-separated; empty = all)")}>
@@ -1011,16 +1019,14 @@ function StepFilter(props: {
           className="min-h-16"
           value={props.draft.whitelist}
           onChange={(event) => props.onChange("whitelist", event.target.value)}
-          placeholder=".md, .txt, .pdf"
+          placeholder={defaultsText}
         />
-      </Field>
-      <Field label={t("黑名单后缀（永远生效）", "Blacklist extensions (always wins)")}>
-        <Textarea
-          className="min-h-16"
-          value={props.draft.blacklist}
-          onChange={(event) => props.onChange("blacklist", event.target.value)}
-          placeholder=".tmp, .bak"
-        />
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t(
+            `默认包含 Office 文档（${defaultsText}）。其他类型需要自己加到上面，例如加 .pdf / .md / .txt / .csv。`,
+            `Default covers Office formats (${defaultsText}). Add others — e.g. .pdf / .md / .txt / .csv — by typing them above.`
+          )}
+        </p>
       </Field>
       <Field label={t("最大文件大小（字节，留空不限制）", "Max file size in bytes (empty = no limit)")}>
         <Input
@@ -1040,7 +1046,6 @@ function StepConfirm(props: {
 }) {
   const { t } = useI18n();
   const whitelist = props.filetypeFilter?.whitelist ?? [];
-  const blacklist = props.filetypeFilter?.blacklist ?? [];
   const maxBytes = props.filetypeFilter?.maxBytes;
   // Pre-flight probe state — runs before the user clicks "Start
   // watcher" so we can fail fast on a bad API key or unreachable host.
@@ -1078,10 +1083,6 @@ function StepConfirm(props: {
       <PanelInfo
         label={t("白名单", "Whitelist")}
         value={whitelist.length > 0 ? whitelist.join(", ") : t("接受全部", "Accept all")}
-      />
-      <PanelInfo
-        label={t("黑名单", "Blacklist")}
-        value={blacklist.length > 0 ? blacklist.join(", ") : t("无", "None")}
       />
       <PanelInfo
         label={t("最大文件", "Max size")}
@@ -1911,11 +1912,11 @@ function DetailsOverview(props: {
             }
           />
           <PanelInfo
-            label={t("黑名单", "Blacklist")}
+            label={t("最大文件", "Max size")}
             value={
-              folder.filetypeFilter.blacklist && folder.filetypeFilter.blacklist.length > 0
-                ? folder.filetypeFilter.blacklist.join(", ")
-                : t("无", "None")
+              folder.filetypeFilter.maxBytes != null
+                ? formatBytes(folder.filetypeFilter.maxBytes)
+                : t("无限制", "Unlimited")
             }
           />
           <PanelInfo

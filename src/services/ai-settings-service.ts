@@ -114,9 +114,11 @@ export class AiSettingsService {
     const embeddingApiKey = input.clearEmbeddingApiKey ? null : normalizeOptionalSecret(input.embeddingApiKey);
     const llmApiKey = input.clearLlmApiKey ? null : normalizeOptionalSecret(input.llmApiKey);
     // If the user submits an empty Base URL/Model for embedding or LLM,
-    // fall back to the env defaults (sunwoda gateway) so we never
-    // persist a blank value that would later fail the embedding/LLM
-    // call. Trim first — whitespace-only counts as empty.
+    // fall back to the env defaults so we never persist a blank value
+    // that would later fail the embedding/LLM call. Trim first —
+    // whitespace-only counts as empty. The env defaults are intentionally
+    // empty in shipped configs, so an unconfigured install surfaces a
+    // clear "missing configuration" error at request time.
     const trimmedEmbeddingBaseUrl = input.embeddingBaseUrl.trim();
     const embeddingBaseUrl = trimmedEmbeddingBaseUrl || config.EMBEDDING_BASE_URL;
     const trimmedEmbeddingModel = input.embeddingModel.trim();

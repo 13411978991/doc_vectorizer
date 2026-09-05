@@ -734,6 +734,44 @@ export const api = {
   },
 
   /**
+   * Local BGE embedding model helpers. These power the dedicated
+   * "Local model" card in Settings — probe validates a directory on
+   * disk, warmup forces an eager pre-load, test runs a single probe
+   * embedding so the user can sanity-check their setup.
+   */
+  async getLocalModelCatalog() {
+    return request<{
+      catalog: Array<{ id: string; label: string; repo: string; dim: 1024 | 4096; sizeHintMB: number }>;
+      defaultLocalModelPath: string;
+      supportedDimensions: number[];
+    }>("/api/settings/embedding/local-model/catalog");
+  },
+
+  async probeLocalModel(modelPath: string) {
+    const params = new URLSearchParams({ path: modelPath });
+    return request<{
+      path: string;
+      ready: boolean;
+      files: string[];
+      reason?: string;
+    }>(`/api/settings/embedding/local-model/probe?${params.toString()}`);
+  },
+
+  async warmupLocalModel(modelPath: string) {
+    return request<{ ok: boolean; tookMs: number; error?: string }>(
+      "/api/settings/embedding/local-model/warmup",
+      { method: "POST", body: JSON.stringify({ modelPath }) }
+    );
+  },
+
+  async testLocalModel(modelPath: string, text: string) {
+    return request<{ ok: boolean; tookMs: number; dim?: number; sample?: number[]; error?: string }>(
+      "/api/settings/embedding/local-model/test",
+      { method: "POST", body: JSON.stringify({ modelPath, text }) }
+    );
+  },
+
+  /**
    * Probe the configured embedding endpoint. The backend always returns
    * a structured body (either `{ embedding: ConnectionProbe }`); the
    * HTTP status code distinguishes "API is reachable and key is valid"

@@ -167,5 +167,5 @@ MCP 连不上：
 数据库损坏 / 迁移报错：
 - 删 data/sag.db 重启，会自动重建（数据会丢）
 
-打包者：钟远声 / sunwoda audit team
+打包者：SAG maintainers
 联系：看 Web UI 关于页

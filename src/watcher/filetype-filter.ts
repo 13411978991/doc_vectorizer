@@ -28,9 +28,11 @@ export function getExtension(filePath: string): string {
  *      Ingesting them produces ghost documents that disappear the moment
  *      the user closes the file, which confuses the manifest. The user
  *      can still see them in the file tree (just not ingested).
- *   1. Blacklist → exclude immediately (no other rule matters).
- *   2. Whitelist (if set) → must include; otherwise exclude.
- *   3. Otherwise → include (extension itself is not gated).
+ *   1. Whitelist (if set) → must include; otherwise exclude.
+ *   2. Otherwise → include (extension itself is not gated).
+ *
+ * The legacy blacklist field was removed in v2 — operators now express
+ * "exclude everything except X" by setting the whitelist to `X`.
  *
  * Note: file size is NOT checked here — the caller can apply `filter.maxBytes`
  * before calling this or before ingest, because we don't want to stat every file
@@ -50,13 +52,6 @@ export function shouldIncludeFile(
   }
 
   const ext = getExtension(filePath);
-
-  if (filter.blacklist && filter.blacklist.length > 0) {
-    const bl = filter.blacklist.map((e) => normalizeExt(e));
-    if (ext && bl.includes(ext)) {
-      return { include: false, reason: `extension ${ext} is blacklisted` };
-    }
-  }
 
   if (filter.whitelist && filter.whitelist.length > 0) {
     const wl = filter.whitelist.map((e) => normalizeExt(e));

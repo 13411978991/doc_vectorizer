@@ -1998,7 +1998,7 @@ function ProjectRail(props: {
           <div className="w-full max-w-sm rounded-lg border border-border bg-card p-4 shadow-lg" role="dialog" aria-modal="true" aria-labelledby="create-project-title">
             <div id="create-project-title" className="text-sm font-semibold">{t("新建项目", "New project")}</div>
             <p className="mt-1 text-xs text-muted-foreground">{t("输入项目名称后创建，文档和对话都会归属到这个项目。", "Enter a project name. Documents and chats will belong to this project.")}</p>
-            <p className="mt-1 text-[11px] text-muted-foreground/80">{t("命名参考：审计年度+被审单位+事项，如「2025 年报审计 · 华东分公司」。", "Naming tip: audit year + entity + subject, e.g. \"FY2025 audit · East division\".")}</p>
+            <p className="mt-1 text-[11px] text-muted-foreground/80">{t("命名参考：时间 + 主题 + 范围，如「2025 年报 · 华东分公司」。", "Naming tip: time + topic + scope, e.g. \"FY2025 report · East division\".")}</p>
             <Input
               autoFocus
               className="mt-4"
@@ -2013,7 +2013,7 @@ function ProjectRail(props: {
                   void submitCreateProject();
                 }
               }}
-              placeholder={t("如：2025 年报审计 · 华东分公司", "e.g. FY2025 audit · East division")}
+              placeholder={t("如：2025 年报 · 华东分公司", "e.g. FY2025 report · East division")}
               disabled={isCreatingProject}
             />
             <div className="mt-4 flex justify-end gap-2">
@@ -3172,16 +3172,14 @@ const DEFAULT_SEARCH_TOP_K = 10;
 const DEFAULT_CHUNKING_MODE: ChunkingMode = "heading_strict";
 const DEFAULT_CHUNK_TOKEN_LIMIT = 1024;
 const DEFAULT_CHUNK_OVERLAP_TOKENS = 100;
-// Defaults for the LLM panel. The user has standardised on the
-// Sunwoda internal LLM gateway; we mirror that here so an empty
-// settings row (e.g. after a fresh install) still shows a usable
-// Base URL/Model rather than two empty inputs. The server-side
-// config falls back to env values, but the form should show what
-// the user can expect to hit on first open.
-const DEFAULT_LLM_BASE_URL = "https://llm-api.sunwoda.com/v1";
-const DEFAULT_LLM_MODEL = "hy-mt2-7b";
-const DEFAULT_EMBEDDING_BASE_URL = "https://llm-api.sunwoda.com/v1";
-const DEFAULT_EMBEDDING_MODEL = "qwen3-embedding-8b";
+// Defaults for the LLM panel. Shipped empty so a fresh install does not
+// pre-fill a vendor-specific endpoint into the operator's form. The
+// placeholders below use generic OpenAI-compatible examples; the real
+// config still comes from the server (.env + ai_provider_settings row).
+const DEFAULT_LLM_BASE_URL = "";
+const DEFAULT_LLM_MODEL = "";
+const DEFAULT_EMBEDDING_BASE_URL = "";
+const DEFAULT_EMBEDDING_MODEL = "";
 
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
@@ -3221,6 +3219,22 @@ function SettingsPanel(props: {
   const [defaultChunkingMode, setDefaultChunkingMode] = useState<ChunkingMode>("heading_strict");
   const [chunkTokenLimit, setChunkTokenLimit] = useState(1024);
   const [chunkOverlapTokens, setChunkOverlapTokens] = useState(100);
+  // Local BGE model helper state. The catalog is fetched once on mount;
+  // probe / warmup / test results are surfaced inline so the user can
+  // tell at a glance whether the path they pasted is actually a
+  // usable transformers.js model directory.
+  type LocalModelCatalogEntry = { id: string; label: string; repo: string; dim: 1024 | 4096; sizeHintMB: number };
+  type LocalModelProbe = { path: string; ready: boolean; files: string[]; reason?: string };
+  const [localModelCatalog, setLocalModelCatalog] = useState<{
+    catalog: LocalModelCatalogEntry[];
+    defaultLocalModelPath: string;
+    supportedDimensions: number[];
+  } | null>(null);
+  const [localModelProbe, setLocalModelProbe] = useState<LocalModelProbe | null>(null);
+  const [localModelProbeBusy, setLocalModelProbeBusy] = useState(false);
+  const [localModelWarmup, setLocalModelWarmup] = useState<{ state: "idle" | "running" | "done"; tookMs?: number; error?: string }>({ state: "idle" });
+  const [localModelTest, setLocalModelTest] = useState<{ state: "idle" | "running" | "done"; tookMs?: number; dim?: number; sample?: number[]; error?: string }>({ state: "idle" });
+  const [localModelTestInput, setLocalModelTestInput] = useState("今天天气怎么样");
   // Server bind info (host/port for HTTP web UI + MCP HTTP transport).
   // Fetched on mount so the "Server" card renders immediately when the
   // user opens Settings. Failures are swallowed — the card just shows
@@ -3242,6 +3256,52 @@ function SettingsPanel(props: {
       cancelled = true;
     };
   }, []);
+
+  // Fetch the local-model catalog once on mount. The catalog is static
+  // (operator-curated list of well-tested BGE checkpoints) so we never
+  // re-fetch unless the panel remounts.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await api.getLocalModelCatalog();
+        if (!cancelled) setLocalModelCatalog(data);
+      } catch {
+        if (!cancelled) setLocalModelCatalog(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Debounced probe — when the path changes we re-validate it on disk
+  // after a short pause so the UI doesn't flood the backend with
+  // requests while the operator is typing.
+  useEffect(() => {
+    if (embeddingProvider !== "local-bge") {
+      setLocalModelProbe(null);
+      return;
+    }
+    const path = embeddingLocalModelPath.trim();
+    if (!path) {
+      setLocalModelProbe(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setLocalModelProbeBusy(true);
+      void api
+        .probeLocalModel(path)
+        .then((result) => {
+          setLocalModelProbe(result);
+        })
+        .catch(() => {
+          setLocalModelProbe(null);
+        })
+        .finally(() => setLocalModelProbeBusy(false));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [embeddingLocalModelPath, embeddingProvider]);
 
   useEffect(() => {
     if (!props.settings) return;
@@ -3337,7 +3397,18 @@ function SettingsPanel(props: {
         </div>
       </SettingsCard>
 
-      <SettingsCard title="AI Provider" badge={props.settings.embeddingProvider === "api" ? "Sunwoda" : props.settings.embeddingProvider === "local-bge" ? "本地 BGE" : "本地"}>
+      <SettingsCard
+        title="AI Provider"
+        badge={
+          props.settings.embeddingProvider === "local-bge"
+            ? "本地 BGE"
+            : props.settings.embeddingProvider === "local"
+            ? "本地 (内置)"
+            : props.settings.hasEmbeddingApiKey && props.settings.embeddingModel && props.settings.embeddingBaseUrl
+            ? t("远程 API · 已配置", "Remote API · configured")
+            : t("远程 API · 未配置", "Remote API · unconfigured")
+        }
+      >
         {/* Embedding section: provider, base URL, model, dimensions */}
         <Field label={t("Embedding 提供方", "Embedding provider")}>
           <select
@@ -3362,14 +3433,14 @@ function SettingsPanel(props: {
             type="url"
             value={embeddingBaseUrl}
             onChange={(event) => setEmbeddingBaseUrl(event.target.value)}
-            placeholder="https://llm-api.sunwoda.com/v1"
+            placeholder="https://your-embedding-gateway.example/v1"
           />
         </Field>
         <Field label="Embedding 模型">
           <Input
             value={embeddingModel}
             onChange={(event) => setEmbeddingModel(event.target.value)}
-            placeholder="qwen3-embedding-8b"
+            placeholder="text-embedding-3-large"
           />
         </Field>
         <Field label={t("Embedding 维度", "Embedding dimensions")}>
@@ -3393,13 +3464,144 @@ function SettingsPanel(props: {
           />
         </Field>
         {embeddingProvider === "local-bge" && (
-          <Field label={t("本地模型路径", "Local model path")}>
-            <Input
-              value={embeddingLocalModelPath}
-              onChange={(event) => setEmbeddingLocalModelPath(event.target.value)}
-              placeholder="C:\\models\\bge-base-zh-v1.5"
-            />
-          </Field>
+          <>
+            <Field label={t("本地模型目录", "Local model directory")}>
+              <Input
+                value={embeddingLocalModelPath}
+                onChange={(event) => {
+                  setEmbeddingLocalModelPath(event.target.value);
+                  setClearEmbeddingLocalModelPath(false);
+                  setLocalModelWarmup({ state: "idle" });
+                  setLocalModelTest({ state: "idle" });
+                }}
+                placeholder={
+                  localModelCatalog?.defaultLocalModelPath ?? "models/bge-large-zh-v1.5"
+                }
+              />
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                {localModelProbeBusy && (
+                  <span className="text-muted-foreground">
+                    {t("检查中…", "Probing…")}
+                  </span>
+                )}
+                {!localModelProbeBusy && localModelProbe && localModelProbe.ready && (
+                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">
+                    {t(`已就绪 · ${localModelProbe.files.length} 个文件`, `Ready · ${localModelProbe.files.length} files`)}
+                  </span>
+                )}
+                {!localModelProbeBusy && localModelProbe && !localModelProbe.ready && (
+                  <span className="rounded-full bg-amber-50 px-2 py-0.5 text-amber-700">
+                    {t(`未就绪：${localModelProbe.reason ?? "路径无效"}`, `Not ready: ${localModelProbe.reason ?? "invalid path"}`)}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="ml-auto rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                  disabled={!localModelProbe?.ready || localModelWarmup.state === "running"}
+                  onClick={() => {
+                    setLocalModelWarmup({ state: "running" });
+                    void api.warmupLocalModel(embeddingLocalModelPath.trim()).then((r) => {
+                      setLocalModelWarmup({
+                        state: "done",
+                        tookMs: r.tookMs,
+                        error: r.error
+                      });
+                    });
+                  }}
+                >
+                  {localModelWarmup.state === "running"
+                    ? t("预热中…", "Warming up…")
+                    : t("预热 / 重载", "Warm up / reload")}
+                </button>
+              </div>
+              {localModelWarmup.state === "done" && (
+                <div className={cn("mt-1 text-xs", localModelWarmup.error ? "text-red-600" : "text-emerald-700")}>
+                  {localModelWarmup.error
+                    ? t(`预热失败：${localModelWarmup.error}`, `Warmup failed: ${localModelWarmup.error}`)
+                    : t(`预热成功（${localModelWarmup.tookMs ?? 0} ms）`, `Warmed up (${localModelWarmup.tookMs ?? 0} ms)`)}
+                </div>
+              )}
+            </Field>
+
+            {localModelCatalog && (
+              <Field label={t("推荐模型（点击填到路径）", "Recommended models (click to fill)")}>
+                <div className="flex flex-wrap gap-2">
+                  {localModelCatalog.catalog.map((entry) => (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className="rounded-md border border-border bg-card px-2 py-1 text-xs hover:bg-accent"
+                      onClick={() => {
+                        setEmbeddingLocalModelPath(`models/${entry.id}`);
+                        setClearEmbeddingLocalModelPath(false);
+                        setEmbeddingDimensions(entry.dim);
+                        setLocalModelWarmup({ state: "idle" });
+                        setLocalModelTest({ state: "idle" });
+                      }}
+                      title={`${entry.repo} · ${entry.dim}d · ~${entry.sizeHintMB} MB`}
+                    >
+                      <div className="font-medium">{entry.label}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {entry.dim}d · ~{entry.sizeHintMB} MB
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t(
+                    "点选会把路径填成相对 exe 工作目录的 models/<id>。模型文件需自行放到该目录（HF 下载：search 对应 repo）。",
+                    "Clicking fills the path with models/<id> relative to the exe working directory. Place the model files there yourself (HF: search for the repo id)."
+                  )}
+                </p>
+              </Field>
+            )}
+
+            <Field label={t("在线试运行（可选）", "Live test (optional)")}>
+              <div className="flex gap-2">
+                <Input
+                  value={localModelTestInput}
+                  onChange={(event) => setLocalModelTestInput(event.target.value)}
+                  placeholder={t("任意一句中文", "Any sentence")}
+                />
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md border border-border px-3 py-1 text-sm hover:bg-accent disabled:opacity-50"
+                  disabled={!localModelProbe?.ready || localModelTest.state === "running"}
+                  onClick={() => {
+                    setLocalModelTest({ state: "running" });
+                    void api.testLocalModel(embeddingLocalModelPath.trim(), localModelTestInput.trim() || "hello").then((r) => {
+                      setLocalModelTest({
+                        state: "done",
+                        tookMs: r.tookMs,
+                        dim: r.dim,
+                        sample: r.sample,
+                        error: r.error
+                      });
+                    });
+                  }}
+                >
+                  {localModelTest.state === "running" ? t("运行中…", "Running…") : t("试运行", "Test")}
+                </button>
+              </div>
+              {localModelTest.state === "done" && (
+                <div className={cn("mt-1 text-xs", localModelTest.error ? "text-red-600" : "text-muted-foreground")}>
+                  {localModelTest.error
+                    ? t(`试运行失败：${localModelTest.error}`, `Test failed: ${localModelTest.error}`)
+                    : t(
+                        `dim=${localModelTest.dim} · ${localModelTest.tookMs ?? 0} ms · 前 5 维：${(localModelTest.sample ?? []).join(", ")}`,
+                        `dim=${localModelTest.dim} · ${localModelTest.tookMs ?? 0} ms · first 5 dims: ${(localModelTest.sample ?? []).join(", ")}`
+                      )}
+                </div>
+              )}
+            </Field>
+
+            <div className="md:col-span-2 mt-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+              {t(
+                "⚠️ 本地模型首次加载需 5-15 秒（ONNX pipeline 初始化），预热后第一次检索会更平滑。模型文件需自己从 HuggingFace 下载并放到上面填的目录；常见结构：config.json + tokenizer.json + onnx/model.onnx。",
+                "⚠️ Local model load takes 5-15s on first use (ONNX pipeline init); warming it up smooths the first search. Download model files from HuggingFace yourself into the directory above; expected layout: config.json + tokenizer.json + onnx/model.onnx."
+              )}
+            </div>
+          </>
         )}
 
         {/* LLM section: separate fields for chat / event-extraction. */}
@@ -3417,14 +3619,14 @@ function SettingsPanel(props: {
             type="url"
             value={llmBaseUrl}
             onChange={(event) => setLlmBaseUrl(event.target.value)}
-            placeholder={DEFAULT_LLM_BASE_URL}
+            placeholder="https://your-llm-gateway.example/v1"
           />
         </Field>
         <Field label="LLM 模型">
           <Input
             value={llmModel}
             onChange={(event) => setLlmModel(event.target.value)}
-            placeholder={DEFAULT_LLM_MODEL}
+            placeholder="gpt-4o-mini"
           />
         </Field>
         <Field label={t(`LLM 密钥：${props.settings.hasLlmApiKey ? "已配置" : "未配置"}`, `LLM key: ${props.settings.hasLlmApiKey ? "configured" : "not configured"}`)}>

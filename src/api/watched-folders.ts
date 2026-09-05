@@ -52,7 +52,6 @@ import type { ManifestStatus, WatchedFolderRecord } from "../watcher/types.js";
 
 const filetypeFilterSchema = z.object({
   whitelist: z.array(z.string()).optional(),
-  blacklist: z.array(z.string()).optional(),
   maxBytes: z.number().int().positive().optional()
 });
 

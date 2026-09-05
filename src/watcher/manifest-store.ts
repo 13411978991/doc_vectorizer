@@ -31,19 +31,19 @@ function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * Map the in-memory `FiletypeFilter` (whitelist/blacklist/maxBytes) to/from
+ * Map the in-memory `FiletypeFilter` (whitelist + maxBytes) to/from
  * the SQLite-native columns `file_extensions_filter` + `ignore_patterns` +
- * `metadata.maxBytes`. The in-memory shape is preserved so callers and
- * tests do not need to change.
+ * `metadata.maxBytes`. The legacy `ignore_patterns` column is preserved
+ * for backward compatibility but is no longer read or written — the
+ * blacklist field was dropped from FiletypeFilter in v2 and the column
+ * stays at `[]` for every row going forward.
  */
 function folderFiletypeFilterFromRow(row: Record<string, unknown>): FiletypeFilter {
   const fileExtensions = parseJsonArray<string>(row.file_extensions_filter);
-  const ignorePatterns = parseJsonArray<string>(row.ignore_patterns);
   const metadata = parseJsonObject(row.metadata) ?? {};
   const maxBytesRaw = (row as Record<string, unknown>).max_bytes ?? metadata.maxBytes;
   const out: FiletypeFilter = {};
   if (fileExtensions && fileExtensions.length > 0) out.whitelist = fileExtensions;
-  if (ignorePatterns && ignorePatterns.length > 0) out.blacklist = ignorePatterns;
   if (typeof maxBytesRaw === "number" && Number.isFinite(maxBytesRaw)) {
     out.maxBytes = Math.trunc(maxBytesRaw);
   }
@@ -193,11 +193,13 @@ export async function createFolder(input: CreateFolderInput): Promise<WatchedFol
   const displayName = input.displayName?.trim() || folderName;
   const callerMetadata = (input.metadata ?? {}) as Record<string, unknown>;
   const filetypeFilter = input.filetypeFilter ?? {};
-  // SQLite-native columns: file_extensions_filter + ignore_patterns +
-  // metadata.maxBytes. We also embed maxBytes into the JSON metadata column
-  // so round-trip reads back the same FiletypeFilter shape.
+  // SQLite-native columns: file_extensions_filter (whitelist) +
+  // metadata.maxBytes. The legacy `ignore_patterns` column is kept but
+  // pinned to `[]` — the blacklist field was removed from FiletypeFilter
+  // in v2 and we don't want to silently drop a column that downstream
+  // queries / migrations might still expect to exist.
   const fileExtensionsFilter = JSON.stringify(filetypeFilter.whitelist ?? []);
-  const ignorePatterns = JSON.stringify(filetypeFilter.blacklist ?? []);
+  const ignorePatterns = "[]";
   const metadata: Record<string, unknown> = { ...callerMetadata };
   if (typeof filetypeFilter.maxBytes === "number") {
     metadata.maxBytes = filetypeFilter.maxBytes;
@@ -422,10 +424,11 @@ export async function updateFolder(
     input.filetypeFilter !== undefined
       ? JSON.stringify(input.filetypeFilter.whitelist ?? [])
       : null;
-  const newIgnorePatterns =
-    input.filetypeFilter !== undefined
-      ? JSON.stringify(input.filetypeFilter.blacklist ?? [])
-      : null;
+  // `ignore_patterns` is no longer driven by the API — v2 dropped the
+  // blacklist field. We still update the column (to "[]") when the
+  // filetypeFilter is rewritten, so old rows that carried an old
+  // blacklist get reset to empty in one round-trip.
+  const newIgnorePatterns = input.filetypeFilter !== undefined ? "[]" : null;
   const newMaxBytes =
     input.filetypeFilter !== undefined && typeof input.filetypeFilter.maxBytes === "number"
       ? input.filetypeFilter.maxBytes

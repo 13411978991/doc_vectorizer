@@ -30,7 +30,7 @@ src/watcher/
 ├── README.md               ← you are here
 ├── types.ts                ← public types (WatchedFolderRecord, etc.)
 ├── manifest-store.ts       ← CRUD for the 3 new tables + Row → Record mapping
-├── filetype-filter.ts      ← pure-function whitelist / blacklist
+├── filetype-filter.ts      ← pure-function whitelist (no blacklist — v2)
 ├── analyzer.ts             ← scanFolder() + computeSha1() + getInode()
 ├── file-converter.ts       ← in-process Node converter (PDF/DOCX/PPTX/XLSX/CSV/HTML → MD)
 ├── sync-orchestrator.ts    ← syncFolder() — the end-to-end pipeline (P0 fix in Sprint 2)

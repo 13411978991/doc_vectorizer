@@ -336,7 +336,7 @@ function inject(exePath, blobPath, outExePath) {
           if (f === "index.html") {
             let html = readFileSync(src, "utf8");
             if (!html.includes("sag-watermark")) {
-              const watermarkStyle = "<style id=\"sag-watermark\" data-injected-by=\"server\">body::after{content:\"\";position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:99999;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='140'%3E%3Ctext x='0' y='70' fill='rgba(0,0,0,0.05)' font-size='16' font-family='sans-serif' transform='rotate(-30,140,70)'%3Esunwoda audit%3C/text%3E%3C/svg%3E\");background-repeat:repeat;}</style>";
+              const watermarkStyle = "<style id=\"sag-watermark\" data-injected-by=\"server\">body::after{content:\"\";position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:99999;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='140'%3E%3Ctext x='0' y='70' fill='rgba(0,0,0,0.05)' font-size='16' font-family='sans-serif' transform='rotate(-30,140,70)'%3Esag%3C/text%3E%3C/svg%3E\");background-repeat:repeat;}</style>";
               html = html.replace("</head>", watermarkStyle + "</head>");
             }
             writeFileSync(dst, html, "utf8");

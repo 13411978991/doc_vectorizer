@@ -57,7 +57,9 @@ describe("API — watched folders CRUD", () => {
             path: dir,
             displayName: "My Folder",
             recursive: true,
-            filetypeFilter: { blacklist: [".log"] },
+            // v2 dropped the blacklist field; whitelist is the only
+            // extension-based way to gate ingestion.
+            filetypeFilter: { whitelist: [".log"] },
             metadata: { source: "api-test" }
           }
         });
@@ -69,7 +71,7 @@ describe("API — watched folders CRUD", () => {
         expect(body.folder.displayName).toBe("My Folder");
         expect(body.folder.enabled).toBe(true);
         expect(body.folder.recursive).toBe(true);
-        expect(body.folder.filetypeFilter.blacklist).toEqual([".log"]);
+        expect(body.folder.filetypeFilter.whitelist).toEqual([".log"]);
         expect(body.folder.metadata.source).toBe("api-test");
         expect(body.folder.sourceId).toMatch(/^[0-9a-f-]{36}$/);
         expect(body.folder.watcherRunning).toBe(true);

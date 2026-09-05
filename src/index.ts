@@ -4,9 +4,9 @@
 // explicitly overridden by the caller.
 process.env.TZ = "Asia/Shanghai";
 
-// Startup banner — printed once when the SEA binary boots so users who
-// launch 黑洞.exe from a shell (PowerShell / cmd) can immediately see
-// who built it. Double-clicking from Explorer suppresses stdout entirely,
+// Startup banner — printed once when the binary boots so users who
+// launch from a shell (PowerShell / cmd) can immediately see version
+// info. Double-clicking from Explorer suppresses stdout entirely,
 // so this only shows in a real terminal — that's intentional (the
 // web UI doesn't need it).
 try {
@@ -16,7 +16,7 @@ try {
   console.log(`
   ╔══════════════════════════════════════════════╗
   ║   SAG — 智能审计与检索工具                  ║
-  ║   作者：钟远声                                ║
+  ║   License: MIT                               ║
   ╚══════════════════════════════════════════════╝
 `);
 } catch {

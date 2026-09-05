@@ -179,8 +179,11 @@ describe("integration — end-to-end sync", () => {
     }
   }, 120_000);
 
-  it("respects a blacklist (excluded file does not become a document)", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "sag-integ-bl-"));
+  it("respects the whitelist (excluded file does not become a document)", async () => {
+    // The legacy "blacklist" field was removed in v2 — the only way to
+    // exclude a file by extension now is via a whitelist that does not
+    // list it. This test pins that contract end-to-end.
+    const dir = await mkdtemp(join(tmpdir(), "sag-integ-wl-"));
     try {
       await writeFile(join(dir, "keep.txt"), "This should be ingested.");
       await writeFile(join(dir, "skip.log"), "This should be skipped.");
@@ -188,7 +191,7 @@ describe("integration — end-to-end sync", () => {
       const folder = await createFolder({
         tenantId: TENANT,
         path: dir,
-        filetypeFilter: { blacklist: [".log"] },
+        filetypeFilter: { whitelist: [".txt"] },
         metadata: { skipExtraction: true }
       });
       const result = await syncFolder(folder.id, "manual", TENANT);
@@ -200,7 +203,7 @@ describe("integration — end-to-end sync", () => {
       expect(byPath["keep.txt"]?.status).toBe("synced");
       expect(byPath["skip.log"]?.status).toBe("synced");
       // SQLite manifest schema does not store per-file lastError (only the
-      // folder-level last_scan_error), so the blacklist reason is logged
+      // folder-level last_scan_error), so the whitelist-skip reason is logged
       // but not persisted on the manifest row. Verifying it here would
       // require a schema change.
 

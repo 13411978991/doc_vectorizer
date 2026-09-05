@@ -350,10 +350,25 @@ export interface WatcherHealth {
 }
 
 export interface FiletypeFilter {
+  /**
+   * Whitelist (lowercase, with leading dot). `undefined` / empty =
+   * accept all supported types. The legacy blacklist field was
+   * removed in v2 — operators express "exclude everything except X"
+   * by setting the whitelist to `X`.
+   */
   whitelist?: string[];
-  blacklist?: string[];
   maxBytes?: number;
 }
+
+/** Default whitelist shown in the watched-folder creation wizard. */
+export const DEFAULT_OFFICE_WHITELIST: string[] = [
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".xls",
+  ".xlsx"
+];
 
 export interface FileManifestRecord {
   id: string;

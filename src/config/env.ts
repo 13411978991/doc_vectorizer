@@ -2,7 +2,11 @@ import "dotenv/config";
 import { z } from "zod";
 
 export const SUPPORTED_EMBEDDING_DIMENSIONS = 1024;
-export const DEFAULT_302AI_BASE_URL = "https://api.302ai.cn/v1";
+// Public, vendor-neutral defaults. Override via .env (EMBEDDING_BASE_URL,
+// LLM_BASE_URL, RERANK_BASE_URL) — leaving these empty in shipped configs
+// is the safe default so a fresh install doesn't accidentally point at
+// a third-party service the operator never agreed to.
+export const DEFAULT_302AI_BASE_URL = "";
 
 // z.coerce.boolean() treats any non-empty string as truthy, which means
 // ALLOW_PROD_WATCHER=false would actually become true. This helper handles
@@ -30,41 +34,38 @@ const envSchema = z.object({
   AUTH_MODE: z.enum(["none", "bearer", "external"]).default("none"),
   EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(SUPPORTED_EMBEDDING_DIMENSIONS)
     .refine((value) => value === SUPPORTED_EMBEDDING_DIMENSIONS || value === 4096,
-      `EMBEDDING_DIMENSIONS must be ${SUPPORTED_EMBEDDING_DIMENSIONS} (pgvector default) or 4096 (qwen3-embedding-8b on sunwoda)`),
-  EMBEDDING_MODEL: z.string().min(1).default("qwen3-embedding-8b"),
+      `EMBEDDING_DIMENSIONS must be ${SUPPORTED_EMBEDDING_DIMENSIONS} or 4096`),
+  // Operator must set EMBEDDING_MODEL via .env. No remote vendor default —
+  // a fresh install would otherwise post the user's first request to a
+  // random provider the operator never authorised.
+  EMBEDDING_MODEL: z.string().default(""),
   EMBEDDING_API_KEY: z.string().default(""),
-  EMBEDDING_BASE_URL: z.string().url().default("https://llm-api.sunwoda.com/v1"),
+  // Default empty string is permitted by z.string() (no `.url()`); the
+  // embedding client treats "" as "not configured" and surfaces a clear
+  // startup error pointing at .env instead of guessing a URL.
+  EMBEDDING_BASE_URL: z.string().default(""),
   // "api" calls a remote OpenAI-compatible endpoint; "local" is a
   // deterministic SHA256-based offline pseudo-embedding used by tests
   // (no network, no model file); "local-bge" runs a Xenova/transformers
   // BGE ONNX model locally (no network, no Python).
   EMBEDDING_PROVIDER: z.enum(["api", "local", "local-bge"]).default("api"),
   EMBEDDING_LOCAL_MODEL_PATH: z.string().default(""),
-  LLM_MODEL: z.string().min(1).default("hy-mt2-7b"),
+  LLM_MODEL: z.string().default(""),
   LLM_API_KEY: z.string().default(""),
-  LLM_BASE_URL: z.string().url().default("https://llm-api.sunwoda.com/v1"),
-  // Default bumped 60s → 120s after CA-19 LLM 超时 root-cause analysis
-  // (sag_xlsx-CA-19-LLM超时-20260818.md §六). The benchmark prompt is
-  // large (system prompt + 1-shot example + chunk content) and the
-  // gateway can spike past 60s on a cold cache. The retry layer
-  // (LLM_MAX_RETRIES) catches shorter transient stalls; this value
-  // covers the worst observed single-call latency.
-  //
-  // Bumped BACK 120s → 60s after sag_xlsx-LLM超时诊断-20260828.md
-  // showed the sunwoda `hy-mt2-7b` endpoint actually returns
-  // 1.5k-char prompts in ~340ms and 32k-char prompts in ~1100ms — so
-  // a 120s ceiling is 100× the realistic latency and only makes a
-  // real hang (DNS, gateway queue, TCP keep-alive drop) take longer to
-  // surface. The original 60s cap with retries=0 covers the genuine
-  // worst case without the "3× × 120s = 6 minutes per chunk" back-off.
+  LLM_BASE_URL: z.string().default(""),
+  // Default 60s. Reasoning: a slow prompt (system + 1-shot example +
+  // chunk content) plus a cold gateway cache can spike past 30s. Combined
+  // with LLM_MAX_RETRIES=0 this caps worst-case per-file ingest latency
+  // without masking genuine hangs (DNS, gateway queue, TCP keep-alive
+  // drop). Raise via .env if your endpoint routinely needs longer.
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   // Default 0 (no retries). Previous default 2 caused startup watcher
   // storms to multiply by 3×: each failed embedding request would retry,
   // holding the Node main thread until the HTTP server could answer
   // /health. With 0 a single failure is surfaced in logs immediately.
   LLM_MAX_RETRIES: z.coerce.number().int().min(0).default(0),
-  RERANK_BASE_URL: z.string().url().optional(),
-  RERANK_MODEL: z.string().min(1).default("qwen3-rerank"),
+  RERANK_BASE_URL: z.string().default(""),
+  RERANK_MODEL: z.string().default(""),
   RERANK_INSTRUCT: z.string().min(1).default("Given a user question, rank SAG event candidates by relevance and usefulness for retrieval-augmented question answering."),
   DEFAULT_SEARCH_MODE: z.enum(["standard", "fast"]).default("fast"),
   // Per-folder ingest concurrency: how many files in one watcher can
@@ -91,6 +92,30 @@ const envSchema = z.object({
   // ~3500 tokens each; the old serial loop waited ~12 s for a 60 KB
   // xlsx. With concurrency=3, the same file lands in ~3 s. Default 3.
   EMBEDDING_BATCH_CONCURRENCY: z.coerce.number().int().positive().max(20).default(5),
+  // ─── Large-file optimisation knobs ─────────────────────────────────────
+  // Global hard cap on a single ingest file's size. Files above this
+  // are skipped during ingest (recorded as "skipped: exceeds maxBytes").
+  // The orchestrator-level filter.maxBytes still wins when it is set on
+  // the watched folder; this is the last-line ceiling.
+  MAX_FILE_BYTES: z.coerce.number().int().positive().default(200 * 1024 * 1024),
+  // PDF parser cap. pdfjs happily decodes 10k-page technical manuals;
+  // we cap at a generous 5000 to bound the markdown blast radius.
+  MAX_PDF_PAGES: z.coerce.number().int().positive().max(50_000).default(5000),
+  // XLSX sheet caps. 200 rows / 26 columns was tuned for audit workbooks
+  // where the relevant signal is the top of each sheet. Raising either
+  // figure multiplies the embedding cost (each row → ~one chunk).
+  MAX_SHEET_ROWS: z.coerce.number().int().positive().max(10_000).default(200),
+  MAX_SHEET_COLS: z.coerce.number().int().positive().max(200).default(26),
+  // When the converter's markdown output exceeds this many characters,
+  // the orchestrator truncates with a clear marker. A 60 MB markdown
+  // blob would otherwise balloon chunking + embedding latency and peak
+  // Node heap. 50 MB is a soft ceiling that comfortably fits the
+  // audit-folder use cases while protecting the runtime.
+  MAX_CONVERTED_MARKDOWN_CHARS: z.coerce.number().int().positive().default(50 * 1024 * 1024),
+  // Files above this byte threshold use a streaming read path (e.g.
+  // PDF page-by-page, TXT/MD line-by-line) instead of readFileSync of
+  // the whole file. Keeps peak heap bounded on 100 MB inputs.
+  STREAMING_CONVERT_THRESHOLD_BYTES: z.coerce.number().int().positive().default(8 * 1024 * 1024),
   // How old a manifest tombstone (`last_event = 'deleted'`) must be
   // before the scheduled sweep physically removes it. Default 7
   // days — long enough that an accidental re-add within a week still
@@ -101,16 +126,10 @@ const envSchema = z.object({
   // Minimum 60 seconds to avoid accidental tight loops in tests.
   TOMBSTONE_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(24 * 60 * 60 * 1000),
   // Hard upper bound on the wall-clock time a single embedding HTTP call
-  // may take before it aborts. Combined with LLM_MAX_RETRIES=0 this
-  // caps the worst-case per-file ingest latency.
-  //
-  // History: was 10s; bumped to 30s after sag_xlsx-9-数据中台-第二波修复后新错误-20260828.md
-  // — the data-platform folder's audit logs CSV had ~107k rows, each LLM-
-  // extracted event produced a multi-KB content string, and the embedding
-  // endpoint (sunwoda hy-mt2-7b) needs ~5-15 s to embed 2 such texts in a
-  // single batch. 10s was below that floor and produced per-batch
-  // "embedding request aborted: timed out after 10000ms" failures even
-  // though the call would have succeeded given a few more seconds.
+  // may take before it aborts. Default 30s. Combined with
+  // LLM_MAX_RETRIES=0 this caps worst-case per-file ingest latency.
+  // A large batch (multi-KB content strings) can take 5-15 s on typical
+  // remote endpoints; raise via .env if your endpoint routinely needs more.
   EMBEDDING_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   // Watcher knobs. Set WATCHER_AUTOSTART=false (the default) to keep
   // 黑洞.exe boot fast and the HTTP API responsive — users add folders

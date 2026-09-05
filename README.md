@@ -20,6 +20,35 @@ This project is an out-of-the-box document retrieval workbench built on SAG. Aft
 
 ![SAG chat workbench](docs/assets/sag-chat.png)
 
+## 基于 SAG 项目开发
+
+本项目 fork 自上游 [Zleap-AI/SAG](https://github.com/Zleap-AI/SAG)，在此基础上做了面向 IT 审计场景的二次开发。下面列出相对上游的关键改动，方便追踪 diff 与协作：
+
+### 数据层
+
+- **SQLite + sqlite-vec 替换 PostgreSQL + pgvector**：把上游的向量库改为本地嵌入式存储，整套部署不再依赖外部数据库服务；为离线 / 单机审计场景启动更快、备份更简单（直接拷贝一个 `.db` 文件）。
+- **本地 Embedding 模型挂载点 `local-bge`**：新增 `embeddingProvider: "local-bge"` 选项，可在设置面板里直接指定本地 HuggingFace / ModelScope 导出的 ONNX 模型目录（如 `Xenova/bge-large-zh-v1.5`），无需再配远程 Embedding API；`dim` 与 `chunk_vec0(FLOAT[1024])` 强约束（见 `src/config/env.ts`）。
+- **审计过程档案 `audit_programs` / `audit_tasks`**：新增两个 SQLite 表 + 13 个 MCP 工具，把审计任务从"上游的挂载文件夹"重构为"共享文件夹驱动的审计过程档案"。详见 [`docs/audit-task-redesign/CHANGELOG.md`](docs/audit-task-redesign/CHANGELOG.md)。
+
+### 业务能力
+
+- **共享文件夹扫描器** (`shared-folder-scanner.ts`)：5 分钟一次的定期扫描 + 手动触发，自动识别程序 / 任务目录并创建索引。
+- **AI 抽程序 (`program-extractor.ts`)**：从已完成审计任务的 Timeline 中抽取可复用的程序步骤（LLM + heuristic 双路径，LLM 失败时自动回退），形成团队可沉淀的方法论资产。
+- **Timeline 自动记录** (`timeline-writer.ts`)：append-only 的 `timeline.jsonl`，所有操作（提问、上传、查文档）自动落库，过程不丢失、可交接。
+- **流程图内联渲染** (`flow-renderer.ts`)：审计程序 → 内联 SVG，无外部依赖，离线可用。
+
+### 工程改动
+
+- **运行时配置精简**：上游默认连 PG + OpenAI，本项目默认连 SQLite + 离线 ONNX Embedding；环境变量 / Settings 路由（`/api/settings/embedding/local-model/{probe,warmup,test}`）都加了对本地模型目录的引导。
+- **Windows 优先打包**：上游的 SEA / pkg 打包脚本在本仓库里不打包成 `.exe`，改用 `start.bat` / `start.ps1` / `start.sh` 三套一键启动脚本作为方案 A。
+
+### 与上游的同步建议
+
+- **保留上游能力**：本项目只在原目录结构和已有 API 上做叠加，不重写 SAG 的核心检索 pipeline（chunk → event → entities → multi-hop recall），便于将来 cherry-pick 上游改进。
+- **可回滚**：本项目的所有改动集中在 `src/audit/`、`docs/audit-task-redesign/`、`migrations/019_*` 三个新增区域里；冲突面可控，必要时可丢弃这些目录回到纯 SAG。
+
+> 想看完整实施记录与每项决策的依据，请读 [`docs/audit-task-redesign/CHANGELOG.md`](docs/audit-task-redesign/CHANGELOG.md) 与 [`docs/audit-task-redesign/PROPOSAL.md`](docs/audit-task-redesign/PROPOSAL.md)。
+
 ## RAG SOTA and Benchmark
 
 SAG benchmark reproduction code: [Zleap-AI/SAG-Benchmark](https://github.com/Zleap-AI/SAG-Benchmark)
