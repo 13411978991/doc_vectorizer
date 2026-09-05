@@ -1,294 +1,183 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="Zleap AI" width="220" />
+  <img src="docs/assets/logo.svg" alt="Logo" width="96" />
 </p>
 
-# SAG
+# 本地文件夹知识库
 
-[![CI](https://github.com/Zleap-AI/SAG/actions/workflows/ci.yml/badge.svg)](https://github.com/Zleap-AI/SAG/actions/workflows/ci.yml)
-[![e2e smoke](https://github.com/Zleap-AI/SAG/actions/workflows/e2e-smoke.yml/badge.svg)](https://github.com/Zleap-AI/SAG/actions/workflows/e2e-smoke.yml)
+**Language**: 简体中文 | [English](README-EN.md)
 
+> 把任意本地文件夹向量化，变成可以对话、检索、可视化的私人知识库。
 
-**Language**: English | [简体中文](README-CN.md)
+把本地一个或多个文件夹交给它，自动完成切片、向量化、事项提取、实体提取和关系整理；之后你可以用自然语言提问、查看检索过程、浏览知识图谱，也能把整个知识库作为 MCP 服务暴露给外部 Agent。
 
+> 本项目 fork 自 [Zleap-AI/SAG](https://github.com/Zleap-AI/SAG)，核心检索结构（chunk → event → entities 的多跳召回）来自上游；本仓库在此基础上做了本地化与离线化，详见[与上游的差异](#与上游的差异)。
 
-> **SAG:** Graph retrieval technology capable of running on large-scale dynamic data.
-> 
-> **Paper:** [https://arxiv.org/abs/2606.15971](https://arxiv.org/abs/2606.15971)
+![工作台预览](docs/assets/documents-overview.png)
 
+---
 
-This project is an out-of-the-box document retrieval workbench built on SAG. After you upload Markdown or TXT documents, SAG automatically handles chunking, vectorization, event extraction, entity extraction, and relation organization. You can ask questions over project documents in a ChatGPT-like interface, inspect chunks, events, entities, embeddings, search traces, raw model logs, and explore the knowledge graph.
+## 它能做什么
 
-![SAG chat workbench](docs/assets/sag-chat.png)
+把一个普通的文件夹变成可以聊天的知识库。具体场景：
 
-## 基于 SAG 项目开发
+- **个人资料库**：把笔记、剪藏、Markdown 文档丢进一个文件夹，就能搜索和提问
+- **团队文档检索**：把项目文档目录挂上，多人共用一个检索服务
+- **RAG / Agent 原型**：自带 MCP Server，外部 Agent 一行配置即可调用当前知识库
+- **检索过程调试**：右栏能看到每一跳召回和打分，便于调优
 
-本项目 fork 自上游 [Zleap-AI/SAG](https://github.com/Zleap-AI/SAG)，在此基础上做了面向 IT 审计场景的二次开发。下面列出相对上游的关键改动，方便追踪 diff 与协作：
+---
 
-### 数据层
+## 核心特性
 
-- **SQLite + sqlite-vec 替换 PostgreSQL + pgvector**：把上游的向量库改为本地嵌入式存储，整套部署不再依赖外部数据库服务；为离线 / 单机审计场景启动更快、备份更简单（直接拷贝一个 `.db` 文件）。
-- **本地 Embedding 模型挂载点 `local-bge`**：新增 `embeddingProvider: "local-bge"` 选项，可在设置面板里直接指定本地 HuggingFace / ModelScope 导出的 ONNX 模型目录（如 `Xenova/bge-large-zh-v1.5`），无需再配远程 Embedding API；`dim` 与 `chunk_vec0(FLOAT[1024])` 强约束（见 `src/config/env.ts`）。
-- **审计过程档案 `audit_programs` / `audit_tasks`**：新增两个 SQLite 表 + 13 个 MCP 工具，把审计任务从"上游的挂载文件夹"重构为"共享文件夹驱动的审计过程档案"。详见 [`docs/audit-task-redesign/CHANGELOG.md`](docs/audit-task-redesign/CHANGELOG.md)。
+- **本地文件夹即数据源**：指定一个目录（支持白名单过滤文件类型），自动监听新增 / 修改 / 删除，增量同步
+- **多数据源汇聚**：一个项目可挂多个本地文件夹作为"自动数据源"，新增 / 修改的文档按文件 / 目录归属关系自动汇入对应项目，跨目录的检索结果在同一个项目下统一呈现
+- **知识结构化**：每个 chunk 提取一个完整事项 (event) + 多个实体 (entities)；事件保留语义，实体负责索引和关系扩展
+- **多跳召回**：检索从事件出发，可以沿着实体关系继续跳，避免重型知识图谱的重建成本
+- **多种检索策略**：BM25 / 向量 / multi-route（事件 + 实体多路召回 + LLM rerank）可切换
+- **本地 Embedding**：开箱即用 `Xenova/bge-large-zh-v1.5`（int8 量化，~312 MB，1024 维），不依赖任何 API key
+- **云端 Embedding**：也支持任意 OpenAI 兼容 Embedding API
+- **MCP 集成**：每个项目有自己的 MCP 配置，外部 Agent 可直接调用 `sag_search` / `sag_ingest_document` 等工具
+- **可视化**：右栏检索 trace + 知识图谱（事件 / 实体节点，可拖拽缩放）
+- **本地优先**：SQLite + sqlite-vec，整套部署就是一个 `.db` 文件 + 几个脚本，备份即拷贝
 
-### 业务能力
+---
 
-- **共享文件夹扫描器** (`shared-folder-scanner.ts`)：5 分钟一次的定期扫描 + 手动触发，自动识别程序 / 任务目录并创建索引。
-- **AI 抽程序 (`program-extractor.ts`)**：从已完成审计任务的 Timeline 中抽取可复用的程序步骤（LLM + heuristic 双路径，LLM 失败时自动回退），形成团队可沉淀的方法论资产。
-- **Timeline 自动记录** (`timeline-writer.ts`)：append-only 的 `timeline.jsonl`，所有操作（提问、上传、查文档）自动落库，过程不丢失、可交接。
-- **流程图内联渲染** (`flow-renderer.ts`)：审计程序 → 内联 SVG，无外部依赖，离线可用。
+## 工作台预览
 
-### 工程改动
+### 项目文档 / 概览
 
-- **运行时配置精简**：上游默认连 PG + OpenAI，本项目默认连 SQLite + 离线 ONNX Embedding；环境变量 / Settings 路由（`/api/settings/embedding/local-model/{probe,warmup,test}`）都加了对本地模型目录的引导。
-- **Windows 优先打包**：上游的 SEA / pkg 打包脚本在本仓库里不打包成 `.exe`，改用 `start.bat` / `start.ps1` / `start.sh` 三套一键启动脚本作为方案 A。
+新建项目并挂载本地文件夹后，进入项目即可看到文档 / 切片 / 事件 / 实体计数，以及每个文档的处理状态与 embedding 样本（前 8 维，便于确认向量真实写入）。
 
-### 与上游的同步建议
+![Documents overview](docs/assets/documents-overview.png)
 
-- **保留上游能力**：本项目只在原目录结构和已有 API 上做叠加，不重写 SAG 的核心检索 pipeline（chunk → event → entities → multi-hop recall），便于将来 cherry-pick 上游改进。
-- **可回滚**：本项目的所有改动集中在 `src/audit/`、`docs/audit-task-redesign/`、`migrations/019_*` 三个新增区域里；冲突面可控，必要时可丢弃这些目录回到纯 SAG。
+### 事件与实体
 
-> 想看完整实施记录与每项决策的依据，请读 [`docs/audit-task-redesign/CHANGELOG.md`](docs/audit-task-redesign/CHANGELOG.md) 与 [`docs/audit-task-redesign/PROPOSAL.md`](docs/audit-task-redesign/PROPOSAL.md)。
+进入单个文档的"事件"页，可见结构化抽取结果：事件标题、关联实体 tag、标题 embedding、内容 embedding（默认 1024 维）的样本值。
 
-## RAG SOTA and Benchmark
+![Event detail](docs/assets/event-detail.png)
 
-SAG benchmark reproduction code: [Zleap-AI/SAG-Benchmark](https://github.com/Zleap-AI/SAG-Benchmark)
+### 对话式检索
 
-SAG is a next-generation RAG approach designed for agents. Instead of stuffing more chunks into the model, it organizes document knowledge with a lighter structure:
+"检索"页直接对当前项目提问，支持极速 / 标准两种模式。结果区显示命中段、命中分数与匹配类型，下方实时返回检索链路 trace（queryEntities / expandedEventIds / coarseRankedEvents 等），便于调试。
 
-```text
-chunk -> event
-chunk -> entities
-event <-> entities
-```
+![Search results](docs/assets/search-results.png)
 
-Each chunk extracts one complete event and multiple entities. The event preserves the full semantic unit, while entities build the index and enable relational expansion, so retrieval can start from a matched event and continue through multi-hop recall without the rebuild cost of a heavyweight knowledge graph.
+---
 
-![SAG architecture](docs/assets/paper-sag-architecture.jpeg)
+## 快速开始
 
-On HotpotQA / 2WikiMultiHop / MuSiQue, under the same configuration:
+### 1. 环境要求
 
-```text
-Embedding = bge-large-en-v1.5
-LLM = qwen3.6-flash
-Datasets = HotpotQA / 2WikiMultiHop / MuSiQue
-```
-
-Compared with HippoRAG 2, SAG achieves clear recall improvements on multi-hop QA: **average Recall@2 improves from 68.14% to 79.30%, a gain of 11.16 percentage points, or about 16.4% relative improvement**. Higher Recall@2 means agents can hit key evidence earlier with less context, reducing token cost, latency, and distraction in multi-turn tasks.
-
-![SAG benchmark summary](docs/assets/sag-benchmark-simple.png)
-
-On MuSiQue Recall@5, SAG improves from HippoRAG 2's 65.13% to 80.04%; after switching to NV-Embed-v2, it further reaches 81.71%, showing that the gain mainly comes from the structure rather than only a stronger embedding model.
-
-## What SAG Can Do
-
-This project turns SAG into a local workbench that can run immediately. It is suitable for:
-
-- Project document Q&A
-- Personal knowledge base search
-- RAG / agent prototype validation
-- Document event and entity analysis
-- MCP tool integration testing
-- Search pipeline debugging and model-call inspection
-
-Core features:
-
-- **Project management**: each project has its own documents, conversations, graph, and MCP configuration.
-- **Multi-document upload**: upload multiple Markdown / TXT files at once, with processing stages and progress.
-- **Document processing results**: inspect chunks, events, entities, embedding data, keyword title search, and paginated browsing.
-- **Conversational retrieval**: ask multi-turn questions over the current project, with streaming output and stop generation.
-- **Source citations**: answers can show numbered citations; click a number to view the original chunk.
-- **Search trace visualization**: the right panel shows SAG's internal retrieval steps and latency in real time.
-- **Raw logs**: browser cache stores raw LLM / Embedding / Rerank requests and responses.
-- **Knowledge graph**: explore project relations with event and entity nodes; drag, zoom, expand, and open details.
-- **MCP integration**: each project exposes its own MCP configuration so external agents can call the current project directly.
-
-## Tech Stack
-
-SAG uses TypeScript across the stack. The frontend is a React + Vite + Tailwind CSS WebUI. The backend uses Fastify HTTP APIs, the MCP TypeScript SDK, and layered service modules. The data layer uses PostgreSQL, pgvector, full-text search, and SQL multi-hop queries. Model providers are OpenAI-compatible LLM, Embedding, and Rerank APIs.
-
-## Workbench Preview
-
-### Document Processing
-
-In the Document tab, you can upload documents, inspect processing status, chunks, events, entities, and embeddings.
-
-![SAG document view](docs/assets/sag-documents.png)
-
-### Graph Exploration
-
-In the Graph tab, you can explore entity-event relations across a project. Nodes support drag, zoom, click-to-expand, and double-click details.
-
-![SAG graph view](docs/assets/sag-graph.png)
-
-### Conversational Retrieval
-
-In the Chat tab, you can ask continuous questions over the current project. Each retrieval refreshes the right-side trace panel for debugging the current call chain.
-
-## Search Modes
-
-SAG provides two modes:
-
-- **Fast mode**: directly matches the query against the entity store using full-text / BM25 search, expands through SAG multi-hop retrieval, and finally uses `qwen3-rerank` to select top-k. This mode does not use an LLM to extract query entities or filter candidates, so it is much faster.
-- **Standard mode**: uses an LLM to extract query entities, then runs SAG multi-route recall and LLM reranking. This is useful when you want to compare the higher-precision pipeline.
-
-Both modes are more than ordinary vector search because both use SAG's event/entity index and SQL multi-hop expansion.
-
-## Quick Start
-
-### 1. Prepare the Environment
-
-You need:
-
-- Node.js 20 or later
+- Node.js 20+
 - npm
-- PostgreSQL
-- pgvector
 
-If you want the fastest setup, use Docker to start PostgreSQL.
+> 不再需要 PostgreSQL / pgvector — 本项目默认使用 SQLite + sqlite-vec。
 
-### 2. Clone the Project
+### 2. 克隆与配置
 
 ```bash
-git clone https://github.com/Zleap-AI/SAG.git
-cd SAG
-```
-
-### 3. Create the Config File
-
-```bash
+git clone https://github.com/13411978991/doc_vectorizer.git
+cd doc_vectorizer
 cp .env.example .env
 ```
 
-`.env.example` already contains default values. For real usage, fill in your own LLM and Embedding API keys.
+`.env.example` 内已带默认值；要使用本地 Embedding 无需改任何东西；要走云端模型则填 `EMBEDDING_API_KEY` / `LLM_API_KEY`。
 
-### 4. Start PostgreSQL
-
-Using Docker:
-
-```bash
-docker compose up -d
-```
-
-If you do not want to use Docker, you can use Homebrew on macOS:
-
-```bash
-brew install postgresql@17 pgvector
-brew services start postgresql@17
-
-/opt/homebrew/opt/postgresql@17/bin/createdb sag_lite
-/opt/homebrew/opt/postgresql@17/bin/psql -d sag_lite -c 'create extension if not exists vector;'
-```
-
-If you use a local PostgreSQL instance, update `DATABASE_URL` in `.env`, for example:
-
-```env
-DATABASE_URL=postgres://your_user@localhost:5432/sag_lite
-```
-
-### 5. Install Dependencies and Initialize the Database
+### 3. 安装依赖
 
 ```bash
 npm install
-npm run db:setup
 ```
 
-### 6. Start the Development Server
+> vitest 在某些 Windows 环境缺 `@embedded-postgres/windows-x64`，如需跑测试需单独安装；只跑主程序可忽略。
+
+### 4. 启动
 
 ```bash
+# 开发模式（前端 dev server + 后端 watch）
 npm run dev
-```
 
-Default development URLs:
-
-```text
-WebUI: http://localhost:5173
-API:   http://localhost:4173
-```
-
-### 7. Build and Start Production
-
-```bash
+# 生产模式
 npm run build
 npm start
 ```
 
-Default production URL:
+默认端口：
 
-```text
-http://localhost:4173
-```
+- WebUI：<http://localhost:5173>
+- HTTP API：<http://localhost:4173>
 
-## First Use
+### 5. 第一次使用
 
-1. Open the WebUI.
-2. Click "New Project" at the top of the left project list.
-3. Go to the Document tab and click "Add Document".
-4. Upload `.md` or `.txt` files.
-5. Wait for the processing queue to finish.
-6. Inspect chunks, events, entities, and embedding status.
-7. Return to the Chat tab and ask questions over the current project.
-8. For debugging, inspect the right-side Search Trace and Raw Logs.
-9. For relationship exploration, open the Graph tab.
-10. For external agents, open the MCP tab and copy the current project's configuration.
+1. 打开 WebUI
+2. 左栏点 "New Project" 创建项目
+3. 进入 Documents 面板，添加一个本地文件夹作为数据源（可指定白名单 / 黑名单 / 递归）
+4. 系统自动监听、同步、向量化
+5. 切换到 Chat 面板，向知识库提问
+6. 右栏 trace 面板查看每一跳召回与延迟
 
-## Configure LLM and Embedding
+### 6. 一键启动脚本（Windows / macOS / Linux）
 
-SAG supports OpenAI-compatible APIs. Default example:
+仓库根目录提供：
 
-```env
-EMBEDDING_BASE_URL=https://api.302ai.cn/v1
-EMBEDDING_MODEL=text-embedding-3-large
-EMBEDDING_DIMENSIONS=1024
+- `start.bat`（Windows）
+- `start.ps1`（Windows PowerShell）
+- `start.sh`（macOS / Linux）
 
-LLM_BASE_URL=https://api.302ai.cn/v1
-LLM_MODEL=qwen3.6-flash
+双击或运行后自动 build + 启动，控制台窗口不阻塞。
 
-RERANK_MODEL=qwen3-rerank
-DEFAULT_SEARCH_MODE=fast
-```
+---
 
-You can configure models in two ways:
+## 接入 Embedding 模型
 
-### Option 1: WebUI Global Settings
+三种方式，按推荐顺序：
 
-Click the settings icon at the top of the left sidebar, open Global Settings, and fill in provider, model names, and API keys.
+### 方式 1：本地 BGE（推荐，零配置）
 
-API keys only show as "Configured / Not configured". Plaintext keys are not echoed in the UI or API responses.
-
-### Option 2: `.env`
-
-```env
-EMBEDDING_API_KEY=your_embedding_key
-LLM_API_KEY=your_llm_key
-RERANK_BASE_URL=https://api.your-provider.com/v1/rerank
-```
-
-By default, rerank requests use `LLM_BASE_URL` and append `/reranks`, for example `https://api.302ai.cn/v1/reranks`. Set `RERANK_BASE_URL` only when your provider needs a different full endpoint such as `/v1/rerank`.
-
-If no API key is configured, the system uses a local deterministic fallback. This is useful for tests and UI inspection, but real retrieval quality requires remote models.
-
-### Option 3: Fully on-device BGE (no API key needed)
-
-Skip the cloud entirely and run BGE locally. The DB schema is fixed at 1024 dims, so pick a model whose `hidden_size` matches.
+下载脚本会从 ModelScope 拉取 `Xenova/bge-large-zh-v1.5`（int8 量化、1024 维，~312 MB）到 `./models/bge-large-zh-v1.5`：
 
 ```bash
-./scripts/download-bge-model.sh   # defaults to ./models/bge-large-zh-v1.5
+./scripts/download-bge-model.sh
 ```
 
-Then in Settings → AI Provider: set Embedding provider to **local-bge** and Local model path to the directory the script printed. The first call after switching loads the pipeline (a few seconds); subsequent calls are per-text forward passes only.
+启动后在 WebUI 设置 → AI Provider：
 
-The bundled `Xenova/bge-large-zh-v1.5` (int8 quantised, ~312 MB) is the default — Chinese SOTA retrieval model and a drop-in 1024-dim replacement for the API provider.
+- Embedding provider 选 **`local-bge`**
+- Local model path 填脚本打印的目录
 
-## MCP Integration
+首次切换会加载 ONNX pipeline（约几秒），之后每个文本只是 forward pass，约 30–150 ms / 文本。
 
-SAG can act as an MCP Server for external agents. Each project's MCP configuration binds the current project ID, so tool calls do not need to pass `projectId`.
+> DB schema 锁定 1024 维，**只能选 `hidden_size = 1024` 的模型**。社区可选：`Xenova/bge-large-zh-v1.5`、`Xenova/bge-m3`。模型目录里必须有一个 `onnx/model_int8.onnx`（或 `model.onnx`）。
+>
+> HuggingFace 直连在某些网络环境不可达，请用 ModelScope 镜像。
 
-Open the MCP tab in the WebUI to see the auto-generated `mcpServers` JSON for the current project. It looks like this:
+### 方式 2：OpenAI 兼容云端 API
+
+在 `.env` 填：
+
+```env
+EMBEDDING_BASE_URL=https://api.your-provider.com/v1
+EMBEDDING_MODEL=text-embedding-3-large
+EMBEDDING_DIMENSIONS=1024
+EMBEDDING_API_KEY=your_key
+```
+
+WebUI 设置面板会显示「已配置 / 未配置」二值，不回显明文 key。
+
+### 方式 3：完全无 key 的本地 fallback
+
+不配置任何 key 时，系统用本地确定性 fallback。**仅供 UI 走通流程**，检索质量不可用——真实场景请用方式 1 或方式 2。
+
+---
+
+## MCP 集成
+
+每项目独立的 MCP 配置，外部 Agent 一行接进来：
 
 ```json
 {
   "mcpServers": {
-    "sag": {
+    "doc_vectorizer": {
       "command": "npm",
       "args": ["run", "mcp"],
       "env": {
@@ -299,161 +188,128 @@ Open the MCP tab in the WebUI to see the auto-generated `mcpServers` JSON for th
 }
 ```
 
-Available MCP tools:
+内置工具：
 
-- `sag_ingest_document`: import a document and run chunking, event extraction, entity extraction, and vectorization.
-- `sag_search`: run SAG multi-route retrieval on the current project and return the internal trace.
-- `sag_explain_search`: return the current project's retrieval pipeline explanation and trace.
-- `sag_get_event`: query event details by event ID.
+| 工具 | 作用 |
+|---|---|
+| `sag_ingest_document` | 导入文档：切片 + 事件抽取 + 实体抽取 + 向量化 |
+| `sag_search` | 在当前项目上跑 multi-route 召回，返回结果 + 内部 trace |
+| `sag_explain_search` | 返回当前项目的检索 pipeline 解释和 trace |
+| `sag_get_event` | 按 event ID 查询事件详情 |
 
-## HTTP API Examples
+---
 
-Health check:
+## 检索策略
 
-```bash
-curl http://localhost:4173/health
-```
+两条 pipeline 可切：
 
-Create a project:
+- **Fast mode**：BM25 / 全文 + SAG 多跳召回 + `qwen3-rerank` 选 top-K。**不调用 LLM 抽取查询实体**，速度快
+- **Standard mode**：LLM 抽查询实体 → SAG 多路召回 → LLM rerank。精度更高，可与 fast 对比
 
-```bash
-curl -X POST http://localhost:4173/api/projects \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Demo Project"}'
-```
+两条都比单纯向量搜索准，因为都用上了事件 / 实体索引和 SQL 多跳扩展。
 
-Ingest a document:
-
-```bash
-curl -X POST http://localhost:4173/ingest \
-  -H 'Content-Type: application/json' \
-  -d '{"sourceId":"project_id","title":"Demo","content":"# Demo\n\nSAG can search project documents.","extract":true}'
-```
-
-Run search:
+请求示例：
 
 ```bash
 curl -X POST http://localhost:4173/api/search \
   -H 'Content-Type: application/json' \
-  -d '{"query":"Why is SAG suitable for multi-hop retrieval?","sourceIds":["project_id"],"strategy":"multi","searchMode":"fast","topK":5,"returnTrace":true}'
+  -d '{"query":"供应商评分","sourceIds":["<project_id>"],"strategy":"multi","searchMode":"fast","topK":5,"returnTrace":true}'
 ```
 
-Stream search trace:
+流式 trace：
 
 ```bash
 curl -N -X POST http://localhost:4173/api/search/stream \
   -H 'Content-Type: application/json' \
-  -d '{"query":"Explain SAG event/entity indexing","sourceIds":["project_id"],"strategy":"multi","returnTrace":true}'
+  -d '{"query":"..."}],"sourceIds":["<project_id>"],"strategy":"multi","returnTrace":true}'
 ```
 
-## Common Commands
+---
 
-```bash
-# Type check
-npm run typecheck
-
-# Lint (advisory — known warnings tolerated, errors block CI)
-npm run lint
-
-# Run tests
-npm test
-
-# Build production assets
-npm run build
-
-# Start production server
-npm start
-
-# Start MCP stdio server
-npm run mcp
-```
-
-## Continuous Integration
-
-Two GitHub Actions workflows live under `.github/workflows/`:
-
-| Workflow | Trigger | What it does |
-|---|---|---|
-| `ci.yml` | every push / PR to `main` | `typecheck` → vitest (216 tests) against an ephemeral Postgres 16 service. Required to merge. |
-| `e2e-smoke.yml` | manual (`workflow_dispatch`) | Boots the dev server, seeds the watched folder + KB project that v10b expects, and runs `audit_workflow_work/visual_test_v10b.py` against it. Run before releases or when touching the KB drawer / audit overview flow. |
-
-The smoke test asserts the user-facing contract that motivated the Sprint 6+7 fix — opening an audit project should immediately reflect the KB project's cached document counts. If it fails, the most likely culprits are (1) cached counts not refreshing after `addKbSource`, or (2) the audit overview not re-fetching KB state after the drawer closes.
-
-Run it locally:
-
-```bash
-# In one terminal
-npm run dev
-
-# In another
-python3 audit_workflow_work/visual_test_v10b.py
-# exits 0 on success, 1 on any failed assertion
-```
-
-## Project Structure
+## 项目结构
 
 ```text
 src/
-  ai/                 LLM, Embedding, and Rerank clients
-  api/                HTTP API
-  config/             Environment configuration
-  db/                 Database connection, migrations, repositories, vector tools
-  ingestion/          Document chunking and event extraction
+  ai/                 Embedding / LLM / Rerank 客户端
+  api/                HTTP API 路由
+  config/             环境变量配置
+  db/                 SQLite 连接、migrations、repositories、sqlite-vec
   mcp/                MCP Server
-  observability/      Logs and model-call records
-  services/           Document processing, search, graph, and WebUI services
+  observability/      日志、模型调用记录
+  services/           文档处理、检索、图谱、WebUI 服务
+  watcher/            文件夹监听 / 同步 / manifest
+  audit/              （可选）过程档案能力，详见 docs/audit-task-redesign/
 
 web/
-  src/                React WebUI
+  src/                React WebUI（Vite + Tailwind）
 
-migrations/           PostgreSQL schema
-test/                 Unit tests
-docs/assets/          README screenshots and diagrams
+docs/
+  assets/             README 截图与示意图
+  audit-task-redesign/  （可选）过程档案方案文档
 ```
+
+---
+
+## 常用命令
+
+```bash
+npm run typecheck     # 类型检查
+npm run lint          # 静态检查（仅阻塞 error；warning 可保留）
+npm run build         # 产出 dist/
+npm start             # 跑生产包
+npm run dev           # 开发模式
+npm run mcp           # 跑 MCP stdio server
+```
+
+---
+
+## 与上游的差异
+
+本项目 fork 自 [Zleap-AI/SAG](https://github.com/Zleap-AI/SAG)。核心差异（方便 cherry-pick / diff）：
+
+- **存储**：用 SQLite + sqlite-vec 替换 PostgreSQL + pgvector — 整库一个 `.db` 文件可拷贝
+- **Embedding**：内置 `local-bge` provider，可直接挂本地 ONNX 模型；不再强制远程 API
+- **数据源**：文件夹监听、增量同步、manifest、文件类型白 / 黑名单等均在上游基础上增强
+- **运行模型**：上游默认 PG + 云端 LLM；本仓库默认 SQLite + 离线 Embedding，单机即跑
+- **可选能力**：在 `src/audit/` 与 `docs/audit-task-redesign/` 里保留了面向"过程档案"的扩展（共享文件夹扫描器、AI 抽程序、Timeline 记录、内联 SVG 流程图等），这些区域与上游可清晰隔离，需要时可整体丢弃回退到纯 SAG
+
+冲突面集中在 `src/audit/` 与 `docs/audit-task-redesign/`，其他目录基本与上游同步演进。
+
+---
 
 ## FAQ
 
-### PostgreSQL Connection Failed
+### 端口被占用
 
-First confirm that the database is running:
-
-```bash
-docker compose ps
-```
-
-Then confirm that `DATABASE_URL` in `.env` is correct.
-
-### pgvector Is Missing
-
-Make sure pgvector is installed and run:
-
-```sql
-create extension if not exists vector;
-```
-
-If you use `docker compose up -d`, the image already includes pgvector.
-
-### Why Do I Not See Real Model Quality?
-
-If `LLM_API_KEY` and `EMBEDDING_API_KEY` are not configured, the system enters local fallback mode. This is useful for testing, but it is not suitable for judging real retrieval quality.
-
-### Document Processing Is Slow
-
-Document processing calls Embedding and LLM APIs. Speed mainly depends on document count, chunk count, model API latency, and concurrency settings. You can tune this in `.env`:
-
-```env
-INGEST_CONCURRENCY=5
-```
-
-### The Port Is Already in Use
-
-In development mode, update `.env`:
+修改 `.env`：
 
 ```env
 HTTP_PORT=4173
 ```
 
-The Vite WebUI uses `5173` by default. If the port is occupied, Vite will show the new address automatically.
+5173 是 Vite 的开发端口，被占会自动换。
+
+### 首次加载 Embedding 很慢
+
+正常 — `local-bge` 第一次切换会加载 ONNX pipeline（~2 GB 临时内存）。之后每次只是 forward pass。
+
+### 文档处理慢
+
+取决于文件数、切片数、Embedding 调用延迟。可调 `.env`：
+
+```env
+INGEST_CONCURRENCY=5
+```
+
+### vec0 表查不到行 / 向量召回返回 0
+
+当前 chunk 的 embedding 写在 `chunk_embeddings.embedding_json`（TEXT），`chunk_vec0` 虚拟表的写入通道尚未实现，所以 KNN 索引是空的。**召回实际走的是 BM25 / 全文匹配 + JS 端余弦回退**，仍可命中但不是 vec0 KNN。详见 `src/db/repositories.ts` 的注释。
+
+### MCP 工具没有出现
+
+打开项目内的 MCP 面板，确认配置已生成；外部 Agent 用 stdio 接入时务必设置 `SAG_MCP_SOURCE_ID` 为当前项目 ID。
+
+---
 
 ## License
 
