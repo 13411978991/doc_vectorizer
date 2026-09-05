@@ -1,0 +1,12 @@
+import Database from "better-sqlite3";
+const db = new Database("E:\\sag\\dist\\builds\\sag-20260813-171645\\data\\sag.db", { readonly: true });
+console.log("=== kb_projects ===");
+const k = db.prepare("SELECT id, name, tenant_id FROM kb_projects").all();
+for (const r of k) console.log(JSON.stringify(r));
+console.log("\n=== kb_sources ===");
+const s = db.prepare("SELECT id, kb_project_id, source_type, name, watched_folder_id, upload_id FROM kb_sources").all();
+for (const r of s) console.log(JSON.stringify(r));
+console.log("\n=== sources (just汇集1/汇集2/汇集3) ===");
+const x = db.prepare("SELECT id, kind, name FROM sources WHERE id IN ('d65db8c0-a432-43e9-8262-2e52895f5764','5038ddb0-8cc0-47b1-9dd5-4cd45b8dc347','a4fc81c1-ea78-428f-9b56-ee8cf859123a')").all();
+for (const r of x) console.log(JSON.stringify(r));
+db.close();

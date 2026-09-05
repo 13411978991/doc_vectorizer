@@ -1,0 +1,12 @@
+# Only needed if you process encrypted .xlsx/.xls/.docx/.pptx files that
+# the Node-only parser can't read (SafeNetLOCK DLP, external-link workbooks,
+# password-protected Office files). Plain files are handled without Python.
+#
+# Install once:
+#   pip install -r scripts-runtime/requirements.txt
+#
+# Requires Python 3.9+.
+openpyxl>=3.1
+xlrd==2.0.1
+python-docx>=1.1
+python-pptx>=0.6.23
