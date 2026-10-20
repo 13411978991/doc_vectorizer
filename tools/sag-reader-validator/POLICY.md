@@ -9,9 +9,9 @@
 
 A reader script is a small program that, when given a file path,
 returns the file's text content on stdout. It runs in a child process
-of 黑洞.exe. Anything in that child process — file system access,
+of SAG.exe. Anything in that child process — file system access,
 network calls, COM automation, PowerShell scripts — runs with the
-**same privileges** as 黑洞.exe. So a malicious reader can:
+**same privileges** as SAG.exe. So a malicious reader can:
 
 - Read any file the user can read (audit PDFs, financial data, etc.)
 - Make outbound network calls (exfiltrate)
@@ -19,7 +19,7 @@ network calls, COM automation, PowerShell scripts — runs with the
 - Replace legitimate binary parsing with arbitrary code
 
 The validator's job is to detect reader scripts that are **clearly
-broken or suspicious** before 黑洞.exe uses them in production. It
+broken or suspicious** before SAG.exe uses them in production. It
 is not, and cannot be, a full security sandbox — that would require
 isolating every reader in a container or VM. It's a **behavioral
 correctness gate**: a reader that fails these checks will produce
@@ -56,9 +56,9 @@ its own.
   known-good reference for arbitrary user files. The "this isn't
   binary garbage" check is the strongest claim we can make.
 - **No signature of the reader script itself.** A reader's source can
-  change between validations and 黑洞.exe does not enforce that the
+  change between validations and SAG.exe does not enforce that the
   current bytes match the cert. If you want that property, hash the
-  reader into the cert yourself and check it in 黑洞.exe's
+  reader into the cert yourself and check it in SAG.exe's
   cert-verify path (the `readerSha256` field is already there for
   this).
 
@@ -76,8 +76,8 @@ The validator defends against:
 
 The validator does NOT defend against:
 - **A determined human attacker** who has shell access on the user's
-  machine. They can disable 黑洞.exe's cert check, replace the
+  machine. They can disable SAG.exe's cert check, replace the
   validator binary, etc. This is out of scope.
 - **A reader that reads and exfiltrates data via its main call.**
-  黑洞.exe explicitly accepts this risk — the reader is a privileged
+  SAG.exe explicitly accepts this risk — the reader is a privileged
   helper, not an untrusted sandbox.

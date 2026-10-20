@@ -45,7 +45,7 @@ const loggerOptions = {
 /**
  * Resolve where pino writes logs. Priority:
  *   1. SAG_LOG_FILE  — absolute path to a log file
- *   2. SAG_LOG_STDERR=true  — stderr (fd 2), used for `黑洞.exe 2>log`
+ *   2. SAG_LOG_STDERR=true  — stderr (fd 2), used for `SAG.exe 2>log`
  *   3. SAG_LOG_AUTO=true (or implicit under WINDOWS_GUI subsystem)
  *      — write to `<sibling-of-exe>/logs/sag-YYYYMMDD-HHMMSS.log` and
  *      stdout to `<sibling-of-exe>/logs/sag.out.log`. This is the
@@ -66,7 +66,7 @@ function pickDestination(): { stream: pino.DestinationStream; name: string } {
   if (process.env.SAG_LOG_AUTO === "true" || shouldAutoLog()) {
     // Detect SEA by checking process.execPath's basename: under `node`
     // it's `node.exe`, under SEA it's whatever the user named the
-    // blob (e.g. 黑洞.exe). We treat execPath != current node as the
+    // blob (e.g. SAG.exe). We treat execPath != current node as the
     // "this is the built exe" signal and route to a sibling logs/
     // directory so the user can inspect them.
     const logsDir = join(dirname(process.execPath), "logs");

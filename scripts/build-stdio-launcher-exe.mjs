@@ -232,21 +232,21 @@ function setGuiSubsystem(outExePath) {
     );
   }
 
-  // Output binary name (renamed from sag-mcp.exe to 本地知识检索-mcp.exe).
+  // Output binary name (renamed from sag-mcp.exe to SAG-mcp.exe).
   // The runtime entry infers its sibling json basenames from
   // this exe basename.
   const RELEASE_DIR = join(ROOT, "release");
-  const EXE_NAME = "本地知识检索-mcp.exe";
+  const EXE_NAME = "SAG-mcp.exe";
   const outExePath = join(RELEASE_DIR, EXE_NAME);
   mkdirSync(RELEASE_DIR, { recursive: true });
   try { rmSync(outExePath, { force: true }); } catch {}
-  for (const stale of ["sag-mcp.exe", "sag.exe", "黑洞-mcp.exe"]) {
+  for (const stale of ["sag-mcp.exe", "sag.exe", "SAG-mcp.exe"]) {
     const stalePath = join(RELEASE_DIR, stale);
     if (stale !== EXE_NAME && existsSync(stalePath)) {
       try { rmSync(stalePath, { force: true }); } catch {}
     }
   }
-  // NOTE: do NOT delete 本地知识检索-后端.exe or 本地知识检索-ingest-worker.exe
+  // NOTE: do NOT delete SAG-backend.exe or SAG-ingest-worker.exe
   // here. They are sibling components produced by build:windows-exe and
   // build:ingest-worker-exe respectively. The full build pipeline
   // (npm run build:desktop) runs them in sequence; wiping them here
@@ -270,12 +270,12 @@ function setGuiSubsystem(outExePath) {
   }
 
   // Ship native-cache + manifest sidecar + migrations alongside
-  // 本地知识检索-mcp.exe. Same basename rule as build-windows-exe.mjs.
-  const sidecarBase = "本地知识检索-mcp";
+  // SAG-mcp.exe. Same basename rule as build-windows-exe.mjs.
+  const sidecarBase = "SAG-mcp";
   const manifestDst = join(RELEASE_DIR, sidecarBase + ".native-map.manifest.json");
   const migrationsDst = join(RELEASE_DIR, sidecarBase + ".migrations.json");
 
-  // Clean up any old sag-mcp.*.* / 黑洞-mcp.*.* / 本地知识检索-mcp.*.*
+  // Clean up any old sag-mcp.*.* / SAG-mcp.*.* / SAG-mcp.*.*
   // sidecars and the old native-cache dir so a previous build doesn't
   // shadow the new names.
   for (const stale of [

@@ -5,7 +5,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 
 const RES = "E:/sag/完整后端版本/源码/doc_vectorizer/release-desktop/win-unpacked/resources";
-const sagPath = path.join(RES, "本地知识检索-后端.exe");
+const sagPath = path.join(RES, "SAG-backend.exe");
 const HTTP_PORT = "4173";
 
 const env = {

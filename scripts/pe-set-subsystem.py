@@ -4,7 +4,7 @@ header Subsystem field.
 
 Why: postject's output is a console subsystem (CLI) binary because
 node.exe's stock PE has Subsystem=3 (CONSOLE). When the user
-double-clicks 黑洞.exe, Windows attaches a console window that
+double-clicks SAG.exe, Windows attaches a console window that
 stays open for the process lifetime — annoying and unprofessional.
 
 Setting Subsystem=2 (WINDOWS_GUI) makes the .exe a GUI app: no

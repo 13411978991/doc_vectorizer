@@ -2,7 +2,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
-const exe = path.join('E:\\sag\\完整后端版本\\源码\\doc_vectorizer\\release-desktop\\win-unpacked\\resources', '本地知识检索-后端.exe');
+const exe = path.join('E:\\sag\\完整后端版本\\源码\\doc_vectorizer\\release-desktop\\win-unpacked\\resources', 'SAG-backend.exe');
 
 const child = spawn(exe, [], {
   cwd: path.dirname(exe),

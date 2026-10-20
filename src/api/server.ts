@@ -224,7 +224,7 @@ export async function startHttpServer(): Promise<void> {
   }
 
   // Scan for the first available port starting at HTTP_PORT.
-  // The MCP server (本地文档检索-mcp.exe) auto-starts on the same
+  // The MCP server (SAG-mcp.exe) auto-starts on the same
   // session and frequently claims 4173, so we try 4173 → 4174 → …
   // up to 4183 rather than failing the boot. We also patch
   // process.env.HTTP_PORT and propagate the chosen port through to

@@ -10,17 +10,18 @@
 // This is simpler than electron-builder and avoids asar integrity
 // surprises: when Electron starts, it reads
 // `<resourcesPath>/app/package.json` → `main: "electron/main.cjs"`,
-// loads it via fs (not asar), spawns `resources/黑洞.exe`. We know
+// loads it via fs (not asar), spawns `resources/SAG.exe`. We know
 // the layout works because it's identical to dev mode + electron.exe.
 
 import { copyFileSync, mkdirSync, rmSync, existsSync, readdirSync, statSync, cpSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const ELECTRON_EXE = join(ROOT, "node_modules", "electron", "dist", "electron.exe");
-const SAG_EXE_SRC = join(ROOT, "release", "本地知识检索-后端.exe");
-const SAG_EXE_DST_NAME = "本地知识检索-后端.exe"; // stays in resources/ as-is so SEA matches what SEA expects
+const SAG_EXE_SRC = join(ROOT, "release", "SAG-backend.exe");
+const SAG_EXE_DST_NAME = "SAG-backend.exe"; // stays in resources/ as-is so SEA matches what SEA expects
 
 const OUT_DIR = join(ROOT, "release-desktop");
 const WIN_UNPACKED = join(OUT_DIR, "win-unpacked");
@@ -211,6 +212,28 @@ const SAG_EXE_FINAL = join(WIN_UNPACKED, "SAG 桌面版.exe");
 console.log("[manual-build] desktop exe =", SAG_EXE_FINAL);
 copyFileSync(ELECTRON_EXE, SAG_EXE_FINAL);
 
+// 2b. Rewrite the desktop exe's icon via rcedit so Explorer /
+//     taskbar / shortcut all show the SAG brand mark. We do this
+//     BEFORE renaming the binary so the resource section is still
+//     in the standard Electron shape — same pattern as build-windows-
+//     exe.mjs which rcedits the SEA backend after build.
+const SHELL_ICO = join(__dirname, "icon.ico");
+if (existsSync(SHELL_ICO)) {
+  const rcedit = process.env.RCEDIT_BIN || "rcedit";
+  const rceditResult = spawnSync(
+    rcedit,
+    [SAG_EXE_FINAL, "--set-icon", SHELL_ICO],
+    { stdio: "inherit", shell: true }
+  );
+  if (rceditResult.status === 0) {
+    console.log("[manual-build]   ✓ icon rewritten to scripts/icon.ico");
+  } else {
+    console.warn("[manual-build]   rcedit failed; keeping default icon");
+  }
+} else {
+  console.warn("[manual-build]   scripts/icon.ico missing; using default icon");
+}
+
 // 3. resources/app/ holds the Electron app code (NOT asar-packed).
 //    Electron's loader reads <resourcesPath>/app/package.json#main
 //    via fs, then loads main.cjs via fs. No asar wrapper = no surprises.
@@ -232,25 +255,25 @@ for (const stale of [staleAsar, staleAsarUnpacked]) {
   }
 }
 
-// 4. resources/本地知识检索-后端.exe + sidecars + web/dist from release/.
+// 4. resources/SAG-backend.exe + sidecars + web/dist from release/.
 //    The Electron shell's main.cjs looks for
-//    `process.resourcesPath/本地知识检索-后端.exe`, so this layout
+//    `process.resourcesPath/SAG-backend.exe`, so this layout
 //    matches what the runtime expects.
 console.log("[manual-build] copying SAG backend + sidecars");
 const SAG_FILTERS = new Set([
-  "本地知识检索-后端.exe",
-  "本地知识检索-后端.exe.stripped-sig.marker",
-  "本地知识检索-后端.native-map.manifest.json",
-  "本地知识检索-后端.migrations.json",
-  "本地知识检索-后端.scripts.json",
-  "本地知识检索-mcp.exe",
-  "本地知识检索-mcp.exe.stripped-sig.marker",
-  "本地知识检索-mcp.native-map.manifest.json",
-  "本地知识检索-mcp.migrations.json",
-  "本地知识检索-ingest-worker.exe",
-  "本地知识检索-ingest-worker.exe.stripped-sig.marker",
-  "本地知识检索-ingest-worker.native-map.manifest.json",
-  "本地知识检索-ingest-worker.migrations.json",
+  "SAG-backend.exe",
+  "SAG-backend.exe.stripped-sig.marker",
+  "SAG-backend.native-map.manifest.json",
+  "SAG-backend.migrations.json",
+  "SAG-backend.scripts.json",
+  "SAG-mcp.exe",
+  "SAG-mcp.exe.stripped-sig.marker",
+  "SAG-mcp.native-map.manifest.json",
+  "SAG-mcp.migrations.json",
+  "SAG-ingest-worker.exe",
+  "SAG-ingest-worker.exe.stripped-sig.marker",
+  "SAG-ingest-worker.native-map.manifest.json",
+  "SAG-ingest-worker.migrations.json",
   ".env.example",
   "mcp-config.json",
   // The native-cache dir holds every raw binary (better-sqlite3

@@ -132,7 +132,7 @@ export async function migrate(): Promise<void> {
   // Use the same path resolver as getPool() so migrations land in the
   // same DB the rest of the app reads from. The previous hardcoded
   // "./data/sag.db" silently drifted from the production path after
-  // the Electron migration moved 黑洞.exe deeper under resources/,
+  // the Electron migration moved SAG.exe deeper under resources/,
   // producing a hidden split where migrations ran against an empty
   // stub and the real legacy DB (often hundreds of MB at the
   // operator's original install location) never got its schema

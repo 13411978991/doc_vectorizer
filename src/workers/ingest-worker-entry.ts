@@ -1,7 +1,7 @@
 /**
  * src/workers/ingest-worker-entry.ts — bootstrap for the embedding
  * worker process. Bundled standalone and wrapped into
- * 黑洞-ingest-worker.exe so the main 黑洞.exe can spawn it as a
+ * SAG-ingest-worker.exe so the main SAG.exe can spawn it as a
  * child process and free its main thread.
  *
  * Lifecycle:
@@ -12,7 +12,7 @@
  *      so the parent can detect a dead child
  *   5. On SIGTERM / SIGINT, stop the loop and exit cleanly
  *
- * The parent (黑洞.exe) decides whether to spawn this child; the
+ * The parent (SAG.exe) decides whether to spawn this child; the
  * default is YES so we always get the parallelism win. Set
  * EMBEDDING_WORKER_SEPARATE_PROCESS=0 to disable.
  *

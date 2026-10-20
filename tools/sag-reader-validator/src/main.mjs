@@ -2,12 +2,12 @@
 //
 // Standalone validator for sag-readers/* scripts.
 //
-// What this does (and why it's a separate exe, not part of 黑洞.exe):
+// What this does (and why it's a separate exe, not part of SAG.exe):
 //
-//   黑洞.exe must never trust a reader script directly. Otherwise:
+//   SAG.exe must never trust a reader script directly. Otherwise:
 //     - An attacker (or a careless AI agent on another computer) writes a
 //       reader that pipes the user's confidential audit PDFs to a remote
-//       server, and 黑洞.exe happily calls it because "the dispatch
+//       server, and SAG.exe happily calls it because "the dispatch
 //       succeeded".
 //     - A broken reader emits bytes that look like text but are actually
 //       binary garbage from a half-decrypted DLP file, poisoning the
@@ -22,8 +22,8 @@
 //      The cert is HMAC-signed with a key derived from this validator's
 //      own binary bytes — so the cert is unforgeable without rebuilding
 //      the validator.
-//   3. 黑洞.exe reads both files. If the cert is missing, malformed, or
-//      signed by an unexpected validator binary, 黑洞.exe SKIPS the
+//   3. SAG.exe reads both files. If the cert is missing, malformed, or
+//      signed by an unexpected validator binary, SAG.exe SKIPS the
 //      reader and falls back to its built-in Node parser. The user can
 //      still work — just no fancy environment-specific extraction.
 //
@@ -31,9 +31,9 @@
 //
 //   The expected SHA-256 of THIS binary is hardcoded in
 //   `EXPECTED_VALIDATOR_SHA256` below. If anyone edits this file's source
-//   and rebuilds, the new binary won't match, and 黑洞.exe will refuse
+//   and rebuilds, the new binary won't match, and SAG.exe will refuse
 //   to honor any cert it signs. So the validation rules can ONLY be
-//   changed by editing both this file AND 黑洞.exe in lockstep — which
+//   changed by editing both this file AND SAG.exe in lockstep — which
 //   requires a code review, not just an AI prompt.
 //
 //   (We use SHA-256 of the running binary as the "key seed" rather than
@@ -41,7 +41,7 @@
 //   plain text. Anyone who can replace this binary can already replace
 //   anything else, so the property is "no AI can silently weaken checks
 //   by editing this file and rerunning" — which holds because rebuilding
-//   changes the SHA-256 that 黑洞.exe trusts.)
+//   changes the SHA-256 that SAG.exe trusts.)
 //
 // Invocation:
 //
@@ -63,7 +63,7 @@
 //   9  — self-integrity violation (binary SHA mismatch)
 //
 // The exit codes are part of the protocol — agents can wire them into
-// their retry / fallback logic. 黑洞.exe treats any non-zero as "reader
+// their retry / fallback logic. SAG.exe treats any non-zero as "reader
 // invalid, skip".
 
 import { spawn } from "node:child_process";
@@ -145,7 +145,7 @@ function usage() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Reader dispatch (mirrors what 黑洞.exe does in external-reader.ts)
+// Reader dispatch (mirrors what SAG.exe does in external-reader.ts)
 // ──────────────────────────────────────────────────────────────────────
 
 function interpreterFor(scriptPath) {
@@ -289,13 +289,13 @@ function parseReaderName(filename) {
 // The HMAC key is derived from this validator binary's own bytes. Anyone
 // who can rewrite this binary can rewrite anything else, so the property
 // we care about is: "you can't silently weaken the rules and have the
-// resulting certs still verify against 黑洞.exe". Rebuilding changes the
+// resulting certs still verify against SAG.exe". Rebuilding changes the
 // SHA-256 and invalidates all certs — exactly what we want.
 function deriveSigningKey() {
   const isPackaged = process.env.SAG_READER_VALIDATOR_PACKAGED === "1";
   if (!isPackaged) {
     // Dev mode — use a stable dev key. Certs from dev mode will fail
-    // 黑洞.exe's verify (which expects the packaged SHA), so dev certs
+    // SAG.exe's verify (which expects the packaged SHA), so dev certs
     // are obviously not production-grade. That's intentional.
     return Buffer.from("sag-reader-validator-dev-mode-key-do-not-ship", "utf8");
   }
@@ -474,7 +474,7 @@ async function main() {
 
   // ── Sign + write cert ──────────────────────────────────────────
   const key = deriveSigningKey();
-  // Self-hash for the cert body so 黑洞.exe can detect "the validator
+  // Self-hash for the cert body so SAG.exe can detect "the validator
   // changed between issuing this cert and now" (only matters for SEA
   // builds — dev-mode certs use a placeholder).
   const selfSha256 = process.env.SAG_READER_VALIDATOR_PACKAGED === "1"

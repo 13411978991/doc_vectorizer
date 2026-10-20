@@ -448,7 +448,7 @@ async function extractViaComInner(
     //   (a) Pointer file via argv → the temp file path itself often
     //       contained CJK (e.g. `D:\IT审计\...`) and got mangled.
     //   (b) UTF-8 bytes via stdin → works in dev `node` but the SEA
-    //       bundle (黑洞.exe) closes the child stdin pipe before PS
+    //       bundle (SAG.exe) closes the child stdin pipe before PS
     //       can read it.
     //   (c) Base64 via process.env → works in dev `node` but the
     //       SEA bundle drops custom env vars before spawning.
@@ -669,7 +669,7 @@ async function killOrphanedExcel(spawnTime: number): Promise<void> {
   return new Promise<void>((resolve) => {
     // Hard timeout — even if every subprocess hangs, this promise
     // MUST resolve within 5s. The host treats unresolved promises as
-    // a stalled queue and 黑洞.exe stops emitting logs.
+    // a stalled queue and SAG.exe stops emitting logs.
     const hardTimeout = setTimeout(() => resolve(), 5_000);
     try {
       hardTimeout.unref?.();

@@ -4,13 +4,13 @@
 
 ## 1. 一句话总览
 
-`黑洞.exe`（SAG 后端）**不直接读文件**。它把"读 docx → 得到文本"的工作完全外包给 `sag-readers/` 目录里的脚本。你只需要按本指南写一个脚本，然后用 **`sag-reader-validator.exe`** 验证它。验证通过的 reader 才能被黑洞.exe 调用。验证不通过的 reader 直接被忽略，黑洞.exe 退回内置 Node 解析器（仍然能跑，只是不支持加密/特殊环境）。
+`SAG.exe`（SAG 后端）**不直接读文件**。它把"读 docx → 得到文本"的工作完全外包给 `sag-readers/` 目录里的脚本。你只需要按本指南写一个脚本，然后用 **`sag-reader-validator.exe`** 验证它。验证通过的 reader 才能被SAG.exe 调用。验证不通过的 reader 直接被忽略，SAG.exe 退回内置 Node 解析器（仍然能跑，只是不支持加密/特殊环境）。
 
 **三件事**：
 1. 探测你的电脑环境（有没有 Office / WPS / Python / 加密软件）
 2. 按 SPEC.md 协议写一个 reader 脚本（Python 或 PowerShell）
 3. 用 `sag-reader-validator.exe` 跑一遍，生成 `.sag-validator-cert.json` 证书
-4. 黑洞.exe 下次启动时会自动检查证书，没证书或证书不合格的 reader 都会被跳过
+4. SAG.exe 下次启动时会自动检查证书，没证书或证书不合格的 reader 都会被跳过
 
 ## 2. 第一步：探测环境
 
@@ -87,13 +87,13 @@ print(json.dumps(env, ensure_ascii=False, indent=2))
 | Office 装好了 | `office_com.Word/Excel/PowerPoint` true | Python reader 优先 + Office COM fallback reader |
 | 只有 WPS（国产替代） | `wps_com.Writer/Spreadsheet/Presentation` true | Python reader + WPS COM fallback reader |
 | DLP 加密环境 | `dlp_suspected.SafeNet` true 或类似 | **直接用 COM reader**（Python 解不开 DLP 加密文件） |
-| 啥都没有 | 全 false | 黑洞.exe 退回内置 fallback，reader 是 best-effort |
+| 啥都没有 | 全 false | SAG.exe 退回内置 fallback，reader 是 best-effort |
 
 **判断完成后**，在 `sag-readers/` 下创建对应 reader：
 
 - 干净环境 → `sag-read-docx.py`、`sag-read-xlsx.py`、…（每种文件一个）
 - 加密环境 → `sag-read-docx-encrypted.ps1` 之类（COM 解密优先；命名按 SPEC.md §1 的"扩展名在前 + 可选 variant"规则）
-- 一个电脑可以放多个变体，黑洞.exe 按文件名字典序选 --probe 第一个返回 0 的
+- 一个电脑可以放多个变体，SAG.exe 按文件名字典序选 --probe 第一个返回 0 的
 
 ## 3. 第二步：写 reader
 
@@ -260,26 +260,26 @@ sag-reader-validator.exe --validate sag-read-docx.py --probe-file tests/sample.d
 - reader 绝对路径
 - 校验器二进制 SHA-256（防伪）
 - 各项检查的 hash 快照
-- HMAC 签名（用校验器私钥，**黑洞.exe 用嵌入的对应公钥验签**）
+- HMAC 签名（用校验器私钥，**SAG.exe 用嵌入的对应公钥验签**）
 - 颁发时间
 
 ## 5. 第四步：部署
 
-把 `sag-read-docx.py` 和 `.sag-validator-cert.json` **一起**放进黑洞.exe 安装目录下的 `resources/sag-readers/`。
+把 `sag-read-docx.py` 和 `.sag-validator-cert.json` **一起**放进SAG.exe 安装目录下的 `resources/sag-readers/`。
 
-下次黑洞.exe 启动时：
+下次SAG.exe 启动时：
 1. 扫 sag-readers/ 目录
 2. 对每个 reader，**先查 .sag-validator-cert.json**
 3. 验签失败或文件过期 → 跳过这个 reader，记 warning log
 4. 验签通过 → 跑 `--probe`，选第一个返回 0 的
 
-无证书的 reader → 黑洞.exe 不会用，直接 fallback 到内置 Node 解析器（仍能跑，但可能处理不了加密文件）。
+无证书的 reader → SAG.exe 不会用，直接 fallback 到内置 Node 解析器（仍能跑，但可能处理不了加密文件）。
 
 ## 6. 校验器为什么不能被篡改？
 
-校验器的二进制 SHA-256 烧死在黑洞.exe 源码里（编译期常量）。如果 agent（或任何 AI）改了 `tools/sag-reader-validator/` 下的源码、自己 rebuild，得到的新二进制 SHA 跟黑洞.exe 期望的对不上 → **该校验器签发的所有证书都作废**。所以只有官方源码（这里 git 上 review 过的）build 出来的二进制才能签发有效证书。
+校验器的二进制 SHA-256 烧死在SAG.exe 源码里（编译期常量）。如果 agent（或任何 AI）改了 `tools/sag-reader-validator/` 下的源码、自己 rebuild，得到的新二进制 SHA 跟SAG.exe 期望的对不上 → **该校验器签发的所有证书都作废**。所以只有官方源码（这里 git 上 review 过的）build 出来的二进制才能签发有效证书。
 
-黑进黑洞.exe 改 SHA 常量 → 那已经是另一种攻击了，得改 release 包本身，超出本指南范围。
+黑进SAG.exe 改 SHA 常量 → 那已经是另一种攻击了，得改 release 包本身，超出本指南范围。
 
 ## 7. 调试 checklist
 
@@ -288,12 +288,12 @@ sag-reader-validator.exe --validate sag-read-docx.py --probe-file tests/sample.d
 - [ ] `python sag-readers/sag-read-xxx.py <file>` 单独跑过，确认 stdout 是 markdown 文本、stderr 是 JSON、exit 0
 - [ ] 校验器跑过：`sag-reader-validator.exe --validate <reader> --probe-file <test>`
 - [ ] `.sag-validator-cert.json` 在 reader 旁边
-- [ ] 黑洞.exe 启动后 log 里看到 `reader dispatch: <reader>` 才算生效
-- [ ] 没生效的话检查：cert 是否在同目录？cert HMAC 验签是否过？是否被黑洞.exe 跳过了？
+- [ ] SAG.exe 启动后 log 里看到 `reader dispatch: <reader>` 才算生效
+- [ ] 没生效的话检查：cert 是否在同目录？cert HMAC 验签是否过？是否被SAG.exe 跳过了？
 
 ## 8. 出错时回退路径
 
 - 校验器某项不过 → 改 reader 后重跑校验器，**别手动写证书**（HMAC 会验不过）
-- 黑洞.exe 跳过 reader → 看 `sag-YYYY-MM-DD.log` 里的 `reader cert invalid` 警告
+- SAG.exe 跳过 reader → 看 `sag-YYYY-MM-DD.log` 里的 `reader cert invalid` 警告
 - Reader 跑得起来但内容错 → reader 内部 bug，不影响 cert；调 reader 后重跑校验
-- Reader 是最稀缺资源：宁可 5 个 reader 全失败、也别让 1 个 reader 输出错误文本进黑洞
+- Reader 是最稀缺资源：宁可 5 个 reader 全失败、也别让 1 个 reader 输出错误文本进库

@@ -13,7 +13,7 @@ makes the file look tampered to SmartScreen and any AV that inspects
 Authenticode metadata. Stripping the now-invalid signature is cleaner
 than leaving a broken one: PE remains well-formed, just unsigned. The
 end user can later sign with their own Authenticode certificate via
-`signtool sign /a 黑洞.exe`.
+`signtool sign /a SAG.exe`.
 
 Mechanism: PE files have an IMAGE_DIRECTORY_ENTRY_SECURITY at index 4
 in the data directories array. Each entry is (RVA, size). Setting both
@@ -173,7 +173,7 @@ def strip(exe_path: Path, *, keep: bool = False) -> dict:
             f"  new CheckSum = 0x{new_cs:08X}\n"
             "\n"
             "This exe is unsigned. Sign before distribution with:\n"
-            "  signtool sign /fd SHA256 /a 黑洞.exe\n"
+            "  signtool sign /fd SHA256 /a SAG.exe\n"
         )
         result["marker"] = str(marker)
     return result

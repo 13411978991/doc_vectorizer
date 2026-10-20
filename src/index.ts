@@ -240,7 +240,7 @@ process.on("unhandledRejection", (reason) => {
   // whole file. See src/workers/embedding-worker.ts for the loop
   // design (claim / embed / release with 5-min lock timeout).
   //
-  // Note: the earlier split into a separate 黑洞-ingest-worker.exe
+  // Note: the earlier split into a separate SAG-ingest-worker.exe
   // OS process was rolled back on 2026-08-10 — the per-file
   // wall-clock saving on local ONNX was small (a few percent), and
   // shipping a second 87 MB exe was more friction than it was

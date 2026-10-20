@@ -16,7 +16,7 @@ if ($exeFiles.Count -eq 0) {
 }
 $mainExe = $exeFiles | Where-Object { $_.Name -notlike "*-ingest-worker*" -and $_.Name -notlike "*-mcp*" } | Select-Object -First 1
 $mcpExe  = $exeFiles | Where-Object { $_.Name -like "*-mcp.exe" } | Select-Object -First 1
-if (-not $mainExe) { throw "no main 黑洞.exe found" }
+if (-not $mainExe) { throw "no main SAG.exe found" }
 $mainBase = [System.IO.Path]::GetFileNameWithoutExtension($mainExe.Name)
 Write-Host "Main exe: $($mainExe.Name)"
 Write-Host "MCP exe:  $($mcpExe.Name)"

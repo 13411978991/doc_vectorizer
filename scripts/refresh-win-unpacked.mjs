@@ -42,19 +42,12 @@ if (!existsSync(WIN_UNPACKED)) {
   throw new Error("win-unpacked/ does not exist. Run scripts/build-desktop-manual.mjs first (or npm run build:desktop).");
 }
 
-// Clear stale SAG backend sidecars from a previous build so the new
-// names don't collide. We do NOT touch the Electron binaries (dll/.
+// Clear stale SAG backend sidecars from previous (pre-SAG-rename)
+// builds so the new SAG* names don't collide with old `本地知识检索-*`
+// or `黑洞-*` leftovers. We do NOT touch the Electron binaries (dll/.
 // pak files) — those might be locked by a running GUI process.
 const SAG_STALE = [
-  "黑洞.exe", "黑洞.exe.stripped-sig.marker",
-  "黑洞.native-map.manifest.json", "黑洞.native-map.json",
-  "黑洞.migrations.json", "黑洞.scripts.json",
-  "黑洞-mcp.exe", "黑洞-mcp.exe.stripped-sig.marker",
-  "黑洞-mcp.native-map.manifest.json", "黑洞-mcp.native-map.json",
-  "黑洞-mcp.migrations.json",
-  "黑洞-ingest-worker.exe", "黑洞-ingest-worker.exe.stripped-sig.marker",
-  "黑洞-ingest-worker.native-map.manifest.json", "黑洞-ingest-worker.native-map.json",
-  "黑洞-ingest-worker.migrations.json",
+  // old 本地知识检索-* basenames
   "本地知识检索-后端.exe", "本地知识检索-后端.exe.stripped-sig.marker",
   "本地知识检索-后端.native-map.manifest.json", "本地知识检索-后端.native-map.json",
   "本地知识检索-后端.migrations.json", "本地知识检索-后端.scripts.json",
@@ -64,6 +57,19 @@ const SAG_STALE = [
   "本地知识检索-ingest-worker.exe", "本地知识检索-ingest-worker.exe.stripped-sig.marker",
   "本地知识检索-ingest-worker.native-map.manifest.json", "本地知识检索-ingest-worker.native-map.json",
   "本地知识检索-ingest-worker.migrations.json",
+  // old 黑洞-* basenames (from an earlier codename)
+  "黑洞.exe", "黑洞.exe.stripped-sig.marker",
+  "黑洞.native-map.manifest.json", "黑洞.native-map.json",
+  "黑洞.migrations.json", "黑洞.scripts.json",
+  "黑洞-mcp.exe", "黑洞-mcp.exe.stripped-sig.marker",
+  "黑洞-mcp.native-map.manifest.json", "黑洞-mcp.native-map.json",
+  "黑洞-mcp.migrations.json",
+  "黑洞-ingest-worker.exe", "黑洞-ingest-worker.exe.stripped-sig.marker",
+  "黑洞-ingest-worker.native-map.manifest.json", "黑洞-ingest-worker.native-map.json",
+  "黑洞-ingest-worker.migrations.json",
+  // old sag-* basenames (from an even earlier codename)
+  "sag.exe", "sag-mcp.exe", "sag-ingest-worker.exe",
+  // ensure no leftover top-level native-cache when migrating basenames
   "native-cache",
 ];
 for (const f of SAG_STALE) {
@@ -90,19 +96,19 @@ console.log("[refresh] ✓ app/ refreshed");
 
 // Copy SAG backend + sidecars.
 const SAG_FILTERS = new Set([
-  "本地知识检索-后端.exe",
-  "本地知识检索-后端.exe.stripped-sig.marker",
-  "本地知识检索-后端.native-map.manifest.json",
-  "本地知识检索-后端.migrations.json",
-  "本地知识检索-后端.scripts.json",
-  "本地知识检索-mcp.exe",
-  "本地知识检索-mcp.exe.stripped-sig.marker",
-  "本地知识检索-mcp.native-map.manifest.json",
-  "本地知识检索-mcp.migrations.json",
-  "本地知识检索-ingest-worker.exe",
-  "本地知识检索-ingest-worker.exe.stripped-sig.marker",
-  "本地知识检索-ingest-worker.native-map.manifest.json",
-  "本地知识检索-ingest-worker.migrations.json",
+  "SAG-backend.exe",
+  "SAG-backend.exe.stripped-sig.marker",
+  "SAG-backend.native-map.manifest.json",
+  "SAG-backend.migrations.json",
+  "SAG-backend.scripts.json",
+  "SAG-mcp.exe",
+  "SAG-mcp.exe.stripped-sig.marker",
+  "SAG-mcp.native-map.manifest.json",
+  "SAG-mcp.migrations.json",
+  "SAG-ingest-worker.exe",
+  "SAG-ingest-worker.exe.stripped-sig.marker",
+  "SAG-ingest-worker.native-map.manifest.json",
+  "SAG-ingest-worker.migrations.json",
   ".env.example",
   "mcp-config.json",
   "native-cache",
@@ -131,4 +137,4 @@ if (existsSync(MIGRATIONS_SRC)) {
   console.log("[refresh] ✓ migrations/ refreshed");
 }
 
-console.log("[refresh] ✓ 本地知识检索 desktop ready at:", WIN_UNPACKED);
+console.log("[refresh] ✓ SAG desktop ready at:", WIN_UNPACKED);

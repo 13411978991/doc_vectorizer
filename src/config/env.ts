@@ -176,7 +176,7 @@ const envSchema = z.object({
   // remote endpoints; raise via .env if your endpoint routinely needs more.
   EMBEDDING_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   // Watcher knobs. Set WATCHER_AUTOSTART=false (the default) to keep
-  // 黑洞.exe boot fast and the HTTP API responsive — users add folders
+  // SAG.exe boot fast and the HTTP API responsive — users add folders
   // and trigger sync from the Web UI on demand. STARTUP_SYNC is a
   // synonym kept for backward compatibility with older .env files.
   WATCHER_AUTOSTART: booleanFromString.default(false),

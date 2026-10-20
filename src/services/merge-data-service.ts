@@ -1,5 +1,5 @@
 // src/services/merge-data-service.ts — Merge a stand-alone SAG SQLite dump
-// (`黑洞.exe 同级/合并数据/data/sag.db`) into the running main database and
+// (`SAG.exe 同级/合并数据/data/sag.db`) into the running main database and
 // register the folder as a watched folder.
 //
 // Behaviour:

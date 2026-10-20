@@ -15,7 +15,6 @@ import {
   Folder,
   FolderOpen,
   Loader2,
-  MessageSquare,
   MoreHorizontal,
   Pause,
   Play,
@@ -827,7 +826,7 @@ function AppShell() {
 
   async function permanentlyDeleteDocument(document: DocumentRecord) {
     const confirmed = window.confirm(t(
-      `永久删除文档「{document.title}」」？\n\n这会删除相关切片、事件、实体关系，且不可恢复。`,
+      `永久删除文档「${document.title}」？\n\n这会删除相关切片、事件、实体关系，且不可恢复。`,
       `Permanently delete document "${document.title}"?\n\nThis will delete related chunks, event relations, and entity relations. This action cannot be undone.`
     ));
     if (!confirmed) {
@@ -1213,7 +1212,7 @@ function AppShell() {
       return;
     }
     if (!window.confirm(t(
-      `删除对话「{mcpDetail.session.title}」」？\n\n这会永久删除该会话、消息和工具调用记录，且不可恢复。`,
+      `删除对话「${mcpDetail.session.title}」？\n\n这会永久删除该会话、消息和工具调用记录，且不可恢复。`,
       `Delete conversation "${mcpDetail.session.title}"?\n\nThis will permanently delete the session, messages, and tool call records. This action cannot be undone.`
     ))) {
       return;
@@ -1380,7 +1379,7 @@ function AppShell() {
     <div className={cn(
       // Sidebar widened: 188-220px was too cramped to fit logo,
       // title, JobsStatusStrip pill, and two icon buttons without
-      // truncating "本地文档检索 into "。..". 240-264px gives the
+      // truncating "SAG into "。..". 240-264px gives the
       // header row enough room and still leaves most of the window
       // for the main pane.
       "grid h-dvh min-h-0 grid-cols-[minmax(240px,264px)_minmax(0,1fr)] overflow-hidden bg-card text-foreground",
@@ -1476,7 +1475,7 @@ function AppShell() {
         <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-border px-4 py-2 md:px-6">
           {workspaceView === "settings" ? null : (
             <div className="flex items-center gap-3">
-              <div className="text-sm font-medium text-muted-foreground">{t("本地文档检索", "Local Document Search")}</div>
+              <div className="text-sm font-medium text-muted-foreground">{t("SAG", "Local Document Search")}</div>
               <span className="text-xs text-muted-foreground">/</span>
               {selectedProjectId ? (
                 <div className="flex items-center gap-1.5 text-sm font-semibold text-blue-700">
@@ -1872,7 +1871,7 @@ function ProjectRail(props: {
           {/*
             Sidebar header layout: the column is ~196px wide. Stacking
             5 elements (logo + title + JobsStatusStrip pill + 2 icon
-            buttons) in one flex row used to truncate "本地文档检索
+            buttons) in one flex row used to truncate "SAG
             into ".." and squash everything together. Split into
             two rows:
               row 1: logo + title
@@ -1881,11 +1880,18 @@ function ProjectRail(props: {
             collide with the title or its own icon.
           */}
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
-              <MessageSquare className="h-4 w-4" />
-            </div>
+            {/* Brand mark — same asset as the desktop exe icon and the
+                browser favicon. img (not lucide svg) so it stays visually
+                identical across shell, web tab, and in-app sidebar. */}
+            <img
+              src="/favicon.ico"
+              alt="SAG"
+              width={32}
+              height={32}
+              className="h-8 w-8 shrink-0 rounded-md"
+            />
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-semibold">本地文档检索</div>
+              <div className="truncate text-sm font-semibold">SAG</div>
               <div className="truncate text-xs text-muted-foreground">{t("自动化文件检索工作台", "Automated document retrieval workbench")}</div>
             </div>
           </div>
@@ -4300,7 +4306,7 @@ function SettingsPanel(props: {
                 )}
                 {!localModelProbeBusy && localModelProbe && localModelProbe.ready && (
                   <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">
-                    {t(`已就。· ${localModelProbe.files.length} 个文件`, `Ready · ${localModelProbe.files.length} files`)}
+                    {t(`已就绪 · ${localModelProbe.files.length} 个文件`, `Ready · ${localModelProbe.files.length} files`)}
                   </span>
                 )}
                 {!localModelProbeBusy && localModelProbe && !localModelProbe.ready && (
@@ -4629,7 +4635,7 @@ function SettingsPanel(props: {
                           {t("取消", "Cancel")}
                         </Button>
                         <span className="text-[10px] text-amber-700">
-                          {t("已暂。· 进度保留", "Paused · progress preserved")}
+                          {t("已暂停 · 进度保留", "Paused · progress preserved")}
                         </span>
                       </div>
                     )}
@@ -4683,7 +4689,7 @@ function SettingsPanel(props: {
                     <div className="mt-1.5">
                       {t("要求", "Requirements:")}
                       <ul className="ml-4 mt-0.5 list-disc space-y-0.5">
-                        <li>{t("整个模型目录（含 config.json + tokenizer.json/tokenizer_config.json + onnx/*.onnx。", "A model directory containing config.json, tokenizer.json / tokenizer_config.json, and onnx/*.onnx")}</li>
+                        <li>{t("整个模型目录（含 config.json、tokenizer.json/tokenizer_config.json、onnx/*.onnx）。", "A model directory containing config.json, tokenizer.json / tokenizer_config.json, and onnx/*.onnx")}</li>
                         <li>{t("必须输出 1024 维向量（SAG SQLite-vec schema 锁定为 FLOAT[1024]，其他维度在 ingest 时报错）", "Must output 1024-dim vectors 。the SAG SQLite-vec schema locks the vec tables to FLOAT[1024]; any other dim errors at ingest time")}</li>
                         <li>{t("推荐 Xenova/transformers.js 兼容的 ONNX 导出（量化版即可，省空间）", "Prefer Xenova / transformers.js-compatible ONNX exports 。quantized is fine and saves disk")}</li>
                       </ul>
@@ -5052,7 +5058,7 @@ function ProjectMcpWorkspace({ project, settings }: { project: SourceRecord | nu
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold">{t("项目 MCP", "Project MCP")}</h2>
-            <p className="text-xs text-muted-foreground">{t("当前项目 项目 ID 会写入 MCP server 启动配置，工具调用时不再传项目参数。", "The current project ID is written into the MCP server config, so tool calls do not pass project parameters.")}</p>
+            <p className="text-xs text-muted-foreground">{t("当前项目 ID 会写入 MCP server 启动配置，工具调用时不再传项目参数。", "The current project ID is written into the MCP server config, so tool calls do not pass project parameters.")}</p>
           </div>
           <Badge>{project.name}</Badge>
         </div>
@@ -5088,7 +5094,7 @@ function McpSettingsCard({ project, settings }: { project: SourceRecord; setting
       />
       <PanelInfo
         label={t("项目绑定", "Project binding")}
-        value={t("MCP server 启动时读取SAG_MCP_SOURCE_ID，所有工具默认只访问这个项目。", "The MCP server reads SAG_MCP_SOURCE_ID at startup, and all tools access only this project by default.")}
+        value={t("MCP server 启动时读取 SAG_MCP_SOURCE_ID，所有工具默认只访问这个项目。", "The MCP server reads SAG_MCP_SOURCE_ID at startup, and all tools access only this project by default.")}
         multiline
       />
       <PanelInfo label={t("工具超时", "Tool timeout")} value={t(`${settings.toolTimeoutMs} 毫秒`, `${settings.toolTimeoutMs} ms`)} />
@@ -6128,14 +6134,14 @@ function matchTypeBadgeClass(m: "vector" | "keyword" | "hybrid"): string {
 
 function matchTypeLabel(m: "vector" | "keyword" | "hybrid"): string {
   if (m === "vector") return "语义";
-  if (m === "keyword") return "关键。";
+  if (m === "keyword") return "关键词";
   return "混合";
 }
 
 function matchTypeTooltip(m: "vector" | "keyword" | "hybrid"): string {
   if (m === "vector") return "召回来源：向量语义匹配（cosine on embedding）";
   if (m === "keyword") return "召回来源：关键词字面匹配（heading/content LIKE）";
-  return "召回来源：向。+ 关键词同时命。";
+  return "召回来源：向量 + 关键词同时命中。";
 }
 
 
@@ -6550,7 +6556,7 @@ function AddSourceInline(props: { kbProjectId: string; sourcesProjectId?: string
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("如：2025 年报文件", "e.g. 2025 report folder")} className="mb-3" />
         {type === "folder" ? (
           <>
-            <div className="text-xs text-muted-foreground mb-1">{t("选择文件。*", "Select folder *")}</div>
+            <div className="text-xs text-muted-foreground mb-1">{t("选择文件夹 *", "Select folder *")}</div>
             <select value={selectedFolder} onChange={(e) => {
               const id = e.target.value;
               setSelectedFolder(id);
@@ -7178,7 +7184,7 @@ function ProjectOverview(props: {
 {`{
   "mcpServers": {
     "${props.project.name}": {
-      "command": "INSTALL_DIR\\\\黑洞-mcp.exe",
+      "command": "INSTALL_DIR\\\\SAG-mcp.exe",
       "args": [],
       "env": {
         "DEFAULT_TENANT_ID": "default",

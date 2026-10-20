@@ -1413,16 +1413,16 @@ if (typeof globalThis.Path2D === "undefined") {
 
 const Module = require("module");
 
-// Always-on log redirection. 黑洞.exe can be launched in three ways:
+// Always-on log redirection. SAG.exe can be launched in three ways:
 //   1) PowerShell "Start-Process ... -RedirectStandardOutput" — stdout
 //      goes to whatever file the launcher picks; nothing to do here.
 //   2) Double-click the .exe from Explorer — there is no console at
 //      all, console.log output is dropped on Windows.
-//   3) "& 'C:\path\黑洞.exe'" from a shell — stdout goes to the user's
+//   3) "& 'C:\path\SAG.exe'" from a shell — stdout goes to the user's
 //      terminal but is NOT captured to a file unless they explicitly
 //      tee or redirect.
 //
-// The user has been bitten by case (3) repeatedly: they launch 黑洞.exe
+// The user has been bitten by case (3) repeatedly: they launch SAG.exe
 // to ingest their audit folder, watch the sync run via the Web UI, and
 // then want to inspect the per-file ingest timing — but no log file
 // exists because they forgot the "-RedirectStandardOutput" flag.
@@ -1547,7 +1547,7 @@ try {
 // (not inline in entry.cjs) for the same reason as native-map: large
 // inline strings in entry.cjs crash V8 on Windows during SEA startup.
 // Basename is inferred from process.execPath so renaming the binary
-// (e.g. sag.exe → 本地知识检索-后端.exe) doesn't break the lookup.
+// (e.g. sag.exe → SAG-backend.exe) doesn't break the lookup.
 const EXE_DIR = path.dirname(process.execPath);
 const EXE_BASE = path.basename(process.execPath, ".exe");
 const MIGRATIONS_DIR = path.join(EXE_DIR, "migrations");

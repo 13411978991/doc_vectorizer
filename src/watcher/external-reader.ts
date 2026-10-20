@@ -43,7 +43,7 @@ import { logger } from "../observability/logger.js";
 //
 //   - This SHA is the trust anchor. Anyone who can change both this file
 //     AND `external-reader.ts` can substitute their own validator binary,
-//     but they can also replace 黑洞.exe itself at that point — we're
+//     but they can also replace SAG.exe itself at that point — we're
 //     not defending against a tampered exe.
 //   - In dev mode, the validator runs from source and writes
 //     `validatorSelfSha256: "dev-mode-no-self-hash"`. Those certs fail

@@ -249,8 +249,8 @@ function SAG_README(version, fileCount) {
 ================================
 
 这是给终端用户的本地知识检索（Local Knowledge Retriever）分发包。包含完整的运行时：
-  - 本地知识检索.exe (Electron 桌面壳)
-  - 本地知识检索-后端.exe + native-cache (后端 Node.js SEA bundle)
+  - SAG.exe (Electron 桌面壳)
+  - SAG-backend.exe + native-cache (后端 Node.js SEA bundle)
   - web/dist (前端 bundle)
   - sag-readers/ (文件读取脚本)
   - validator/ (reader 校验器)
@@ -259,7 +259,7 @@ function SAG_README(version, fileCount) {
 ----
 1. 解压此目录到一个**无空格、无中文**的路径（建议 D:\\SAG\\）
    强烈建议: D:\\SAG\\doc_vectorizer\\release-desktop\\win-unpacked\\
-2. 双击 "本地知识检索.exe" 启动
+2. 双击 "SAG.exe" 启动
 3. 首次启动会自动初始化 SQLite 数据库（位置：%APPDATA%\\sag\\）
 4. 浏览器会自动打开 http://127.0.0.1:4173/
 5. （可选）设置 → 嵌入模型 → 下载 bge-m3 / BGE-large
@@ -271,7 +271,7 @@ function SAG_README(version, fileCount) {
 
 文件读取脚本（sag-readers/）
 ---------------------------
-本地知识检索-后端.exe 调用 sag-readers/ 下的脚本读取 .docx/.xlsx/.pptx/.pdf 等文件。
+SAG-backend.exe 调用 sag-readers/ 下的脚本读取 .docx/.xlsx/.pptx/.pdf 等文件。
 每个 reader 必须有对应的 .sag-validator-cert.json 证书才会被使用。
 
 新电脑 / 新环境的 agent 在写新 reader 时：
@@ -288,18 +288,18 @@ resources\\validator\\src\\main.mjs 是 reader 校验器源码。
 
 校验标准（12 项）详见 resources\\validator\\POLICY.md。
 校验规则的 SHA-256 指纹：resources\\validator\\SHA256.txt。
-任何修改 source 后没更新 EXPECTED_VALIDATOR_SHA256（本地知识检索-后端.exe 源码内）
+任何修改 source 后没更新 EXPECTED_VALIDATOR_SHA256（SAG-backend.exe 源码内）
 都会导致 cert 被拒绝。
 
 文件清单（${fileCount} 个）
 --------
 详细 SHA-256 见 ./SHA256.txt。校验：
-  Get-FileHash .\\本地知识检索.exe -Algorithm SHA256
+  Get-FileHash .\\SAG.exe -Algorithm SHA256
 对比 GitHub release 页 / 项目维护者发布的 SHA256 即可验证完整性。
 
 技术支持
 --------
-• 本地知识检索-后端.exe 启动失败 → 检查 %APPDATA%\\sag\\logs\\ 下最新的 sag-*.log
+• SAG-backend.exe 启动失败 → 检查 %APPDATA%\\sag\\logs\\ 下最新的 sag-*.log
 • reader 没被调用 → 检查 resources\\sag-readers\\ 下是否有 .sag-validator-cert.json
 • BGE 模型下载慢 → 切到 设置 → 嵌入模型 → 选更小的模型
 `;
@@ -311,13 +311,13 @@ function SAG_INSTALL() {
 
 1. 解压到目标路径
    推荐: D:\\SAG\\doc_vectorizer\\release-desktop\\
-   解压后目录里应该有: 本地知识检索.exe + 本地知识检索-后端.exe + resources/
+   解压后目录里应该有: SAG.exe + SAG-backend.exe + resources/
 
 2. 确保路径无空格
    错误: "C:\\Program Files\\本地知识检索\\..." (有空格)
    正确: "D:\\SAG\\..." (无空格)
 
-3. 双击 本地知识检索.exe
+3. 双击 SAG.exe
    首次启动会:
    - 弹出 Windows SmartScreen (点"更多信息" → "仍要运行")
    - 自动初始化 SQLite (3-5 秒)
@@ -327,13 +327,13 @@ function SAG_INSTALL() {
 
 5. 关闭方式
    - 关闭浏览器窗口
-   - 本地知识检索.exe 自动退出
+   - SAG.exe 自动退出
    - 或在系统托盘右键 → 退出
 
 故障排查
 --------
 • 端口被占用 → 关闭 4173 端口的其他进程
-• 本地知识检索-后端.exe 启动后立刻退出 → 检查是否有旧实例 (任务管理器)
+• SAG-backend.exe 启动后立刻退出 → 检查是否有旧实例 (任务管理器)
 • SQLite 锁定 → 删除 %APPDATA%\\sag\\data\\sag.db-shm / sag.db-wal
 `;
 }

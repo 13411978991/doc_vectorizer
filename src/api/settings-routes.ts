@@ -58,16 +58,16 @@ export function getModelsInstallDir(): string {
     return path.join(resourcesRoot, "models");
   }
   // SEA / Node-spawn fallback: `process.resourcesPath` is an Electron
-  // property and is undefined when 本地知识检索-后端.exe runs as a
+  // property and is undefined when SAG-backend.exe runs as a
   // standalone SEA child process. There are two supported layouts:
   //
   //   - Packaged (Electron-shell spawn):
-  //       exe at <install>/resources/本地知识检索-后端.exe
+  //       exe at <install>/resources/SAG-backend.exe
   //       models at <install>/resources/models/
   //       → <exeDir>/models
   //
   //   - Dev (npm run dev, electron .):
-  //       exe at <repo>/release/本地知识检索-后端.exe (or similar)
+  //       exe at <repo>/release/SAG-backend.exe (or similar)
   //       models at <repo>/release-desktop/win-unpacked/resources/models/
   //       → <exeDir>/../resources/models (one level up to repo root,
   //         then down into electron-builder's output resources/ tree)

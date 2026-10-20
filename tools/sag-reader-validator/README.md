@@ -7,7 +7,7 @@ A standalone validator for `sag-readers/*` scripts. Produces
 
 `sag-readers/` lets other computers' agents add their own file
 readers (Python / PowerShell / anything). That script runs as a
-child process of `黑洞.exe` with full user privileges. We need a gate
+child process of `SAG.exe` with full user privileges. We need a gate
 that checks "does this reader actually follow the SAG reader protocol
 and produce sane output" before the main exe trusts it.
 
@@ -26,7 +26,7 @@ node src/main.mjs --validate ../../sag-readers/sag-read-docx.py \
 ```
 
 Certs produced from source runs are marked `dev-mode-no-self-hash`
-and will be REJECTED by `黑洞.exe` (which expects the packaged
+and will be REJECTED by `SAG.exe` (which expects the packaged
 binary's SHA). This is intentional — dev certs let you iterate
 without rebuilding the exe.
 
@@ -38,22 +38,22 @@ node build.mjs --sea
 ```
 
 The packaged exe sets `SAG_READER_VALIDATOR_PACKAGED=1` internally,
-so it uses its own bytes as the HMAC signing-key seed. `黑洞.exe`
+so it uses its own bytes as the HMAC signing-key seed. `SAG.exe`
 hardcodes the resulting SHA-256 and refuses any cert signed by a
 different binary.
 
 ## What "tamper-resistant" means here
 
 The expected SHA-256 of the packaged binary is checked into
-`黑洞.exe` at compile time. If anyone — including another AI — edits
+`SAG.exe` at compile time. If anyone — including another AI — edits
 `src/main.mjs` and rebuilds, the new binary won't match. The new
-binary can still issue certs (HMAC is local), but `黑洞.exe` rejects
+binary can still issue certs (HMAC is local), but `SAG.exe` rejects
 them on the trust check.
 
 So to actually weaken the validation rules, an attacker would need
 to:
 1. Edit `src/main.mjs`
-2. Edit `黑洞.exe`'s expected SHA
+2. Edit `SAG.exe`'s expected SHA
 3. Rebuild both
 4. Ship both as a "release"
 
@@ -71,7 +71,7 @@ change obvious in PR review.
 | `POLICY.md` | What each check does and what it does NOT check |
 | `SHA256.txt` | Source-content fingerprint (review-audit trail) |
 | `dist/sag-reader-validator.exe` | The packaged binary |
-| `dist/validator-sha256.txt` | SHA-256 of the packaged binary (paste into `黑洞.exe`) |
+| `dist/validator-sha256.txt` | SHA-256 of the packaged binary (paste into `SAG.exe`) |
 
 ## Build prerequisites
 

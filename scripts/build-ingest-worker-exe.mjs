@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // build-ingest-worker-exe.mjs — Splice dist/sag-ingest-worker.blob into
-// the cached Windows node.exe to produce 黑洞-ingest-worker.exe.
+// the cached Windows node.exe to produce SAG-ingest-worker.exe.
 //
 // Companion to build-stdio-launcher-exe.mjs. Same recipe, different blob
 // and a different output filename. The cached node.exe is reused (no
 // extra download) since the SEA blob is what differentiates the two.
 //
-// The 黑洞.exe parent spawns this on startup, and the two .exe sit in
+// The SAG.exe parent spawns this on startup, and the two .exe sit in
 // the same install dir sharing ./data/sag.db. End users see one
-// 黑洞.exe entry in Task Manager; the worker .exe is a hidden helper.
+// SAG.exe entry in Task Manager; the worker .exe is a hidden helper.
 
 import {
   existsSync,
@@ -110,7 +110,7 @@ function setGuiSubsystem(outExePath) {
     );
   }
 
-  const EXE_NAME = "本地知识检索-ingest-worker.exe";
+  const EXE_NAME = "SAG-ingest-worker.exe";
   const outExePath = join(RELEASE_DIR, EXE_NAME);
   mkdirSync(RELEASE_DIR, { recursive: true });
   try { rmSync(outExePath, { force: true }); } catch {}
@@ -118,20 +118,20 @@ function setGuiSubsystem(outExePath) {
   // Copy the sidecar files to the .exe's sibling, renaming them so
   // they match the .exe's basename. The SEA entry's basename lookup
   // uses process.execPath (which Windows sets to the .exe name), so
-  // 本地知识检索-ingest-worker.exe looks for:
-  //   本地知识检索-ingest-worker.native-map.manifest.json (new)
-  //   本地知识检索-ingest-worker.migrations.json
+  // SAG-ingest-worker.exe looks for:
+  //   SAG-ingest-worker.native-map.manifest.json (new)
+  //   SAG-ingest-worker.migrations.json
   // Plus the raw binary tree at `native-cache/` next to the exe.
-  const sidecarBase = "本地知识检索-ingest-worker";
+  const sidecarBase = "SAG-ingest-worker";
   const manifestDst = join(RELEASE_DIR, sidecarBase + ".native-map.manifest.json");
   const migrationsDst = join(RELEASE_DIR, sidecarBase + ".migrations.json");
   for (const stale of [
     "sag-ingest-worker.native-map.json",
     "sag-ingest-worker.native-map.manifest.json",
     "sag-ingest-worker.migrations.json",
-    "黑洞-ingest-worker.native-map.json",
-    "黑洞-ingest-worker.native-map.manifest.json",
-    "黑洞-ingest-worker.migrations.json",
+    "SAG-ingest-worker.native-map.json",
+    "SAG-ingest-worker.native-map.manifest.json",
+    "SAG-ingest-worker.migrations.json",
     manifestDst, migrationsDst,
   ]) {
     const p = join(RELEASE_DIR, stale);

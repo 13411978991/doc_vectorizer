@@ -544,8 +544,8 @@ function WatchedFoldersList(props: {
             size="sm"
             onClick={() => void openMergeDialog()}
             title={t(
-              "把黑洞.exe 同级目录下的「合并数据」文件夹里的内容合并到 SAG，并开始监听该文件夹。",
-              "Merge the data in the 「合并数据」 folder next to 黑洞.exe into SAG and start watching it."
+              "把SAG.exe 同级目录下的「合并数据」文件夹里的内容合并到 SAG，并开始监听该文件夹。",
+              "Merge the data in the 「合并数据」 folder next to SAG.exe into SAG and start watching it."
             )}
           >
             <Database className="h-4 w-4" />
@@ -767,15 +767,15 @@ function MergeDataDialog(props: {
         <div className="space-y-3 px-5 py-4 text-sm">
           <p className="text-foreground">
             {t(
-              "把黑洞.exe 同级目录下的「合并数据/data/sag.db」合并到 SAG 本体数据库，并在合并完成后自动开始监听该文件夹；以后该目录下的文件变更也会同步进来。",
-              "Merge the sag.db in `<黑洞.exe dir>\\合并数据\\data\\` into SAG's main database, then start watching that folder. After the merge, any future file changes in that folder will sync in automatically."
+              "把SAG.exe 同级目录下的「合并数据/data/sag.db」合并到 SAG 本体数据库，并在合并完成后自动开始监听该文件夹；以后该目录下的文件变更也会同步进来。",
+              "Merge the sag.db in `<SAG.exe dir>\\合并数据\\data\\` into SAG's main database, then start watching that folder. After the merge, any future file changes in that folder will sync in automatically."
             )}
           </p>
 
           {ready == null || ready.status === "loading" ? (
             <div className="flex items-center gap-2 text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {t("正在探测黑洞.exe 同级目录…", "Checking the directory next to 黑洞.exe…")}
+              {t("正在探测SAG.exe 同级目录…", "Checking the directory next to SAG.exe…")}
             </div>
           ) : null}
 

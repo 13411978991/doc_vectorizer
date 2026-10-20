@@ -7355,7 +7355,7 @@ function ProjectOverview(props: {
 {`{
   "mcpServers": {
     "${props.project.name}": {
-      "command": "INSTALL_DIR\\\\黑洞-mcp.exe",
+      "command": "INSTALL_DIR\\\\SAG-mcp.exe",
       "args": [],
       "env": {
         "DEFAULT_TENANT_ID": "default",

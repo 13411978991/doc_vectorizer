@@ -4,8 +4,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 let text = readFileSync("web/src/App.tsx", "utf8");
 const before = text.length;
 
-// Line 1879: `本地文档检。/div>` → should be `本地文档检索</div>`
-// Original was: 本地文档检索</div>  (with closing tag)
+// Line 1879: `本地文档检。/div>` → should be `SAG</div>`
+// Original was: SAG</div>  (with closing tag)
 // Corruption: `索` removed + `</div>` lost (became `/div>`)
 // We CAN'T recover `索` but we can fix the structure
 text = text.replace(/\u3002\/div>/g, '\u7D22</div>');

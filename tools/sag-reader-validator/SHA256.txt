@@ -4,7 +4,7 @@
 #   2. A deliberate update of EXPECTED_VALIDATOR_SHA256 in
 #      src/watcher/external-reader.ts (which trusts ONLY this binary's hash)
 # Without both, any cert produced by a tampered validator will be rejected
-# by 黑洞.exe at dispatch time.
+# by SAG.exe at dispatch time.
 #
 # Composite fingerprint algorithm: SHA-256 of the per-file hashes listed below.
 

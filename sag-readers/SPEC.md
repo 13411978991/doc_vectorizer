@@ -2,7 +2,7 @@
 
 ## 目的
 
-SAG `黑洞.exe` 只认识纯文本。它把"读文件 → 解析为文本"的工作完全交给外部脚本（reader）。这样：
+SAG `SAG.exe` 只认识纯文本。它把"读文件 → 解析为文本"的工作完全交给外部脚本（reader）。这样：
 
 - 不同环境的合规/加密/DLP 工具链（SafeNetLOCK、奇安信、深信服、WPS、Office COM、PDF OCR）只需要替换对应的 reader 脚本，**不需要重新打包 exe**
 - 一台电脑装多个 reader 变体（如 `sag-read-docx.ps1` + `sag-read-docx-corp-encrypted.ps1`），exe 按文件名优先级匹配
@@ -13,7 +13,7 @@ SAG `黑洞.exe` 只认识纯文本。它把"读文件 → 解析为文本"的�
 exe 启动时按以下顺序查找 reader：
 
 1. 环境变量 `SAG_READERS_DIR` 指向的目录（开发者测试用）
-2. `<exe-dir>/sag-readers/`（生产部署位置；`黑洞.exe` 在 `resources/` 下，所以 reader 在 `resources/sag-readers/`）
+2. `<exe-dir>/sag-readers/`（生产部署位置；`SAG.exe` 在 `resources/` 下，所以 reader 在 `resources/sag-readers/`）
 3. 内嵌 fallback（TS 内置的 PDF.js / mammoth / openpyxl，仅在外部 reader 全部缺席时启用）
 
 每个 reader 脚本名遵循：

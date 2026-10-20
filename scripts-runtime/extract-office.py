@@ -168,7 +168,7 @@ def main() -> None:
     # is always ASCII-clean on Windows, e.g. C:\Users\...\Temp) and
     # passes THAT file's path via --input argv. Pointer file form is
     # the only route that survives both (a) Chinese Windows ANSI
-    # codepage munging of argv and (b) the SEA bundle (黑洞.exe)
+    # codepage munging of argv and (b) the SEA bundle (SAG.exe)
     # closing stdin / dropping env vars on its children. The pointer
     # file path itself goes through argv untouched because tmpdir is
     # always ASCII. Reading the pointer file as UTF-8 inside this

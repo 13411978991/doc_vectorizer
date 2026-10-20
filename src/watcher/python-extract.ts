@@ -111,7 +111,7 @@ export async function extractViaPython(inputPath: string): Promise<string> {
     // cause as the com-extract.ps1 fix: argv on Chinese Windows
     // passes through ANSI codepage (GBK), dropping CJK bytes from
     // the path. We tried stdin / env-var / Base64 routes but the
-    // SEA bundle (黑洞.exe) intercepts all three. Pointer file
+    // SEA bundle (SAG.exe) intercepts all three. Pointer file
     // placed in `os.tmpdir()` survives because that path is always
     // ASCII (`C:\Users\<user>\AppData\Local\Temp`) — the pointer-
     // file path itself goes through argv intact.

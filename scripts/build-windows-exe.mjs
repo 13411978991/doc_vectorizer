@@ -70,13 +70,13 @@ function log(...args) {
 
 // Recursively copy a directory tree from src to dst. Used to stage the
 // unpacked native binaries (better_sqlite3.node, llama.dll, ...) next
-// to 黑洞.exe. We deliberately don't use cp -r / robocopy because we
+// to SAG.exe. We deliberately don't use cp -r / robocopy because we
 // want explicit file-level permission handling and to avoid chasing
 // junction points.
 
 // Recursively copy a directory tree from `src` to `dst`. Used to
 // stage the unpacked native binaries (`better_sqlite3.node`,
-// `llama.dll`, ...) next to 黑洞.exe. We deliberately don't use
+// `llama.dll`, ...) next to SAG.exe. We deliberately don't use
 // `cp -r` / `robocopy` because we want explicit file-level
 // permission handling and to avoid chasing junction points.
 function copyDirRobust(src, dst) {
@@ -209,8 +209,8 @@ async function ensureNode() {
   // here (and only here): once the SEA blob is appended, postject leaves
   // the resource section intact so a second rcedit pass on the final
   // 87 MB exe would have to re-scan the trailing data unnecessarily. The
-  // script ships scripts/黑洞.ico; missing icon is a no-op.
-  const icoPath = join(__dirname, "黑洞.ico");
+  // script ships scripts/build/icosag.ico; missing icon is a no-op.
+  const icoPath = join(__dirname, "icosag.ico");
   if (existsSync(icoPath)) {
     const rcedit = process.env.RCEDIT_BIN || "rcedit";
     const rr = spawnSync(rcedit, [exePath, "--set-icon", icoPath], { stdio: "inherit", shell: true });
@@ -284,7 +284,7 @@ function inject(exePath, blobPath, outExePath) {
  * 4) and recompute the optional-header CheckSum so the PE remains
  * well-formed and Windows loads it cleanly. The .exe is then
  * unsigned; users who need Authenticode can re-sign with their own
- * cert via `signtool sign /fd SHA256 /a 黑洞.exe`.
+ * cert via `signtool sign /fd SHA256 /a SAG.exe`.
  *
  * The .stripped-sig.marker sidecar is left next to the .exe so
  * downstream tooling (release scripts, AV scanners) can detect that
@@ -345,17 +345,16 @@ function setGuiSubsystem(outExePath) {
     );
   }
 
-  // Output binary name (renamed to 本地知识检索 / Local Knowledge Retriever).
-  // The runtime entry infers its sibling json basenames from this exe
-  // basename, so the .native-map.json / .migrations.json that ship next
-  // to it must match.
-  const EXE_NAME = "本地知识检索-后端.exe";
+  // Output binary name. The runtime entry infers its sibling json
+  // basenames from this exe basename, so the .native-map.json /
+// .migrations.json that ship next to it must match.
+  const EXE_NAME = "SAG-backend.exe";
   const outExePath = join(RELEASE_DIR, EXE_NAME);
   mkdirSync(RELEASE_DIR, { recursive: true });
   try { rmSync(outExePath, { force: true }); } catch {}
   // Remove the old-name binaries if they linger from a previous build so
   // the dist directory doesn't accumulate stale files.
-  for (const stale of ["sag.exe", "sag-mcp.exe", "黑洞.exe", "黑洞-mcp.exe", "黑洞-ingest-worker.exe", "本地知识检索-mcp.exe", "本地知识检索-ingest-worker.exe"]) {
+  for (const stale of ["sag.exe", "sag-mcp.exe", "SAG.exe", "SAG-mcp.exe", "SAG-ingest-worker.exe", "SAG-mcp.exe", "SAG-ingest-worker.exe"]) {
     const stalePath = join(RELEASE_DIR, stale);
     if (stale !== EXE_NAME && existsSync(stalePath)) {
       try { rmSync(stalePath, { force: true }); } catch {}
@@ -382,7 +381,7 @@ function setGuiSubsystem(outExePath) {
   // <release>/logs/ when the binary is a built SEA exe.
   setGuiSubsystem(outExePath);
 
-  // Ship .env.example next to 黑洞.exe so end users can discover
+  // Ship .env.example next to SAG.exe so end users can discover
   // configuration without opening the docs. No secrets inside.
   const envExampleSrc = join(ROOT, ".env.example");
   if (existsSync(envExampleSrc)) {
@@ -403,7 +402,7 @@ function setGuiSubsystem(outExePath) {
   }
 
   // Ship the native-cache dir + manifest alongside the backend .exe.
-  // Names must match process.execPath's basename (本地知识检索-后端) so the
+  // Names must match process.execPath's basename (SAG-backend) so the
   // entry's basename lookup finds them. We moved from a single base64
   // JSON map to a directory of raw binaries + a tiny manifest because
   // the base64 JSON blew up V8's 512 MB single-string limit once
@@ -411,7 +410,7 @@ function setGuiSubsystem(outExePath) {
   // build wrote a 1.4 GB base64 string and `readFileSync →
   // JSON.parse` in the runtime hit the same ceiling and crashed
   // the exe on startup).
-  const sidecarBase = "本地知识检索-后端";
+  const sidecarBase = "SAG-backend";
   const manifestDst = join(RELEASE_DIR, sidecarBase + ".native-map.manifest.json");
   const migrationsDst = join(RELEASE_DIR, sidecarBase + ".migrations.json");
 

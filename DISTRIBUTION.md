@@ -1,4 +1,4 @@
-# 黑洞 (SAG) 分发包使用说明
+# SAG 分发包使用说明
 
 > 受众：在自己电脑上拿到 `sag-package.zip` 的同事 / 测试人员。
 > 这份文档覆盖：(1) 解压与首次运行 (2) MCP 配置 (3) 使用方法 (4) 常见问题。
@@ -9,12 +9,12 @@
 
 | 文件 | 大小 | 说明 |
 |------|------|------|
-| `黑洞.exe` | ~87 MB | 主程序，提供 HTTP API + Web UI（端口 4173） |
-| `黑洞-mcp.exe` | ~87 MB | stdio MCP 入口，给 Trae / Claude / Cursor 用 |
-| `黑洞.native-map.json` | ~130 MB | 黑洞.exe 启动时读，离它最近的那个必须存在 |
-| `黑洞.migrations.json` | ~40 KB | 黑洞.exe 启动时读，schema 迁移文件 |
-| `黑洞-mcp.native-map.json` | ~130 MB | 黑洞-mcp.exe 启动时读 |
-| `黑洞-mcp.migrations.json` | ~40 KB | 黑洞-mcp.exe 启动时读 |
+| `SAG.exe` | ~87 MB | 主程序，提供 HTTP API + Web UI（端口 4173） |
+| `SAG-mcp.exe` | ~87 MB | stdio MCP 入口，给 Trae / Claude / Cursor 用 |
+| `SAG-backend.native-map.json` | ~130 MB | SAG-backend.exe 启动时读，离它最近的那个必须存在 |
+| `SAG-backend.migrations.json` | ~40 KB | SAG-backend.exe 启动时读，schema 迁移文件 |
+| `SAG-mcp.native-map.json` | ~130 MB | SAG-mcp.exe 启动时读 |
+| `SAG-mcp.migrations.json` | ~40 KB | SAG-mcp.exe 启动时读 |
 | `.env.example` | < 1 KB | 环境变量样例，**复制一份改名为 `.env`** 即可 |
 | `mcp-config.json` | < 1 KB | Trae HTTP 模式配置片段 |
 | `mcp-config-stdio.json` | < 1 KB | Trae stdio 模式配置片段（推荐） |
@@ -24,24 +24,24 @@
 > 1. `Copy-Item .env.example .env`，然后用编辑器打开 `.env` 填 LLM/Embedding API key
 > 2. 把整包放到一个**不带空格、不带中文**的路径下（如 `D:\sag\`）。**不要放在桌面**——OneDrive/同步盘会锁文件。
 
-> **exe 名注意**：两个可执行文件名是中文（`黑洞.exe` / `黑洞-mcp.exe`），左上的图标也是黑洞；运行时窗口标题因为 Node.js 进程 hardcode，仍然会显示 "Node.js"，这是已知限制。
+> **exe 名注意**：三个可执行文件名是 `SAG.exe` / `SAG-backend.exe` / `SAG-mcp.exe`。运行时窗口标题因为 Node.js 进程 hardcode 仍会显示 "Node.js"，这是已知限制。
 
 ## 2. 启动方式（三选一）
 
 ### 2.1 stdio 模式（推荐给 Trae 用户）
 
-Trae 启动时会**自动**spawn `黑洞-mcp.exe`，你不用手动跑。第一次用 MCP 工具时才需要启动。
+Trae 启动时会**自动**spawn `SAG-mcp.exe`，你不用手动跑。第一次用 MCP 工具时才需要启动。
 
 **优势**：
 - 最简单，**用户啥都不用做**
 - 不占端口（走 stdin/stdout）
 - 一个 Trae 一个进程，多个 Trae 互不影响
 
-**何时手动启动**：测试 MCP 是否正常时，双击 `黑洞-mcp.exe`，看到命令行窗口**不输出内容、不关闭**就是正常的（它在等 stdin 数据；一旦有 client 连上来就开始处理）。
+**何时手动启动**：测试 MCP 是否正常时，双击 `SAG-mcp.exe`，看到命令行窗口**不输出内容、不关闭**就是正常的（它在等 stdin 数据；一旦有 client 连上来就开始处理）。
 
 ### 2.1.1 关于 watcher（监听文件夹）
 
-`黑洞.exe` 默认**不会**在启动时自动扫描 watched folder。启动后用户可以从 Web UI（数据源 → 添加 → 触发同步）按需启动 watcher。
+`SAG.exe` 默认**不会**在启动时自动扫描 watched folder。启动后用户可以从 Web UI（数据源 → 添加 → 触发同步）按需启动 watcher。
 
 启动后的 watcher **自动监听**文件系统变化：新建 / 修改 / 删除任何 watched folder 里的文件，chokidar 都会触发事件 → ingest-queue 入队 → 调用 embedding API → 更新 `chunks` / `events` / `entities` 表 → sqlite-vec 向量库同步。整个链路是 fire-and-forget，主线程不被阻塞，HTTP / Web UI 仍然秒级响应。
 
@@ -56,11 +56,11 @@ Trae 启动时会**自动**spawn `黑洞-mcp.exe`，你不用手动跑。第一�
 **启动**：
 ```powershell
 cd <解压目录>
-.\黑洞.exe
+.\SAG.exe
 ```
 或者：
 ```powershell
-.\黑洞.exe
+.\SAG.exe
 ```
 看到 `server: listening on http://0.0.0.0:4173` 就起来了。
 
@@ -70,7 +70,7 @@ cd <解压目录>
 
 ### 2.3 HTTP 模式 + 远程 MCP（给远程客户端）
 
-如果想让同事的 Trae 连你这台电脑上的 黑洞：
+如果想让同事的 Trae 连你这台电脑上的 SAG：
 
 1. `.env` 里改：
    ```
@@ -79,7 +79,7 @@ cd <解压目录>
    MCP_AUTH_MODE=bearer
    MCP_AUTH_TOKEN=一串随机token
    ```
-2. 启动 黑洞.exe
+2. 启动 SAG.exe
 3. 防火墙放行 4174 端口
 4. 同事那边 Trae MCP 配置：
    ```json
@@ -105,7 +105,7 @@ cd <解压目录>
 {
   "mcpServers": {
     "sag": {
-      "command": "D:\\sag\\黑洞-mcp.exe",
+      "command": "D:\\sag\\SAG-mcp.exe",
       "args": [],
       "env": {
         "DATABASE_FILE": "D:\\sag\\data\\sag.db",
@@ -120,7 +120,7 @@ cd <解压目录>
 **关键点**：
 - `command` 路径里的 `\\` 是 JSON 转义后的双反斜杠，**必须**这么写
 - `DATABASE_FILE` 指向的目录不需要预先建，第一次启动时会自动 `mkdir -p`
-- 如果 `D:\sag\黑洞-mcp.exe` 启动报"找不到 黑洞-mcp.native-map.json"，说明 `.env` 没生效或 cwd 不对——把 `DATABASE_FILE` 写绝对路径即可
+- 如果 `D:\sag\SAG-mcp.exe` 启动报"找不到 SAG-mcp.native-map.json"，说明 `.env` 没生效或 cwd 不对——把 `DATABASE_FILE` 写绝对路径即可
 - 改完 **完全退出 Trae 再重开**才能生效（reload 工作区不够）
 
 ### HTTP 远程
@@ -147,7 +147,7 @@ Trae 重启后，看 MCP 面板：
 如果显示 **disconnected** 或列表里没 sag：
 1. 看 Trae 日志（Output → "Trae MCP" 或 "MCP Servers"）
 2. 通常是 `command` 路径错或反斜杠不对
-3. 也可能是被 DLP / 杀软拦了 黑洞-mcp.exe，把解压目录加白名单
+3. 也可能是被 DLP / 杀软拦了 SAG-mcp.exe，把解压目录加白名单
 
 ## 4. SAG 使用方法（给最终用户）
 
@@ -218,10 +218,10 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:4173/search" -Body $body -
 
 ## 5. 常见问题
 
-### Q1: 第一次启动 黑洞.exe 弹 SmartScreen？
+### Q1: 第一次启动 SAG.exe 弹 SmartScreen？
 点 **More info → Run anyway**。这是因为 exe 没签名，不影响功能。
 
-### Q2: 启动 黑洞.exe 闪退 / 报错 `v8::ToLocalChecked Empty MaybeLocal`？
+### Q2: 启动 SAG.exe 闪退 / 报错 `v8::ToLocalChecked Empty MaybeLocal`？
 这是 DLP / 亿赛通管控环境下 Node SEA 的已知问题。**当前版本已修复**（入口模板里 polyfill 了 pdfjs 需要的 DOMMatrix/Path2D），如果你拿到的是 2026-07-29 之后打的包，应该不会遇到。
 
 ### Q3: Trae 看不到 sag MCP？
@@ -244,16 +244,16 @@ EMBEDDING_LOCAL_MODEL_PATH=models/bge-large-zh-v1.5
 ```
 需要先下载 BGE 模型到那个路径。
 
-### Q5: `黑洞-mcp.exe` 启动后命令行窗口什么都不显示？
+### Q5: `SAG-mcp.exe` 启动后命令行窗口什么都不显示？
 正常。stdio MCP server **不会**写任何东西到 stdout（那会污染 JSON-RPC 协议）。要看日志，stderr 是 logger 输出但需要别的进程连上去才有响应。
 
 ### Q6: 数据库文件放哪？
-默认在 exe 同目录的 `data/sag.db`。`黑洞.exe` 和 `黑洞-mcp.exe` 共享同一份数据库（通过 `DATABASE_FILE` env 或默认 fallback）。
+默认在 exe 同目录的 `data/sag.db`。`SAG.exe` 和 `SAG-mcp.exe` 共享同一份数据库（通过 `DATABASE_FILE` env 或默认 fallback）。
 
 ### Q7: 怎么重置数据库？
-直接删除 `data/sag.db`（和 `-shm` / `-wal`），下次启动 黑洞.exe 会自动跑迁移重建。**会丢失所有已摄入的文档和事件**。
+直接删除 `data/sag.db`（和 `-shm` / `-wal`），下次启动 SAG.exe 会自动跑迁移重建。**会丢失所有已摄入的文档和事件**。
 
-### Q8: 黑洞.exe 占多少端口？
+### Q8: SAG.exe 占多少端口？
 - 4173 — HTTP API / Web UI（HTTP_PORT）
 - 4174 — MCP HTTP 模式（MCP_HTTP_PORT，仅 `MCP_TRANSPORT=http` 时启用）
 
@@ -267,17 +267,17 @@ taskkill /F /PID <pid>
 ```
 
 ### Q10: 想看实时日志？
-黑洞.exe 在 stdout 打 pino JSON 日志，重定向到文件即可：
+SAG.exe 在 stdout 打 pino JSON 日志，重定向到文件即可：
 ```powershell
-.\黑洞.exe 2>&1 | Tee-Object -FilePath sag.log
+.\SAG.exe 2>&1 | Tee-Object -FilePath sag.log
 ```
 
 ## 6. 已知限制
 
 - **未签名 binary**：第一次启动有 SmartScreen 警告
-- **运行时窗口标题**：Node.js 进程 hardcode console 标题为 "Node.js"，rcedit 改不进去。Explorer / 文件管理器里看到的是黑洞图标 + 黑洞.exe 文件名，进程窗口标题仍是 Node.js
+- **运行时窗口标题**：Node.js 进程 hardcode console 标题为 "Node.js"，rcedit 改不进去。Explorer / 文件管理器里看到的是 SAG 图标 + SAG.exe 文件名，进程窗口标题仍是 Node.jse.js
 - **本地 ONNX 模型需自备**：`EMBEDDING_PROVIDER=local-bge` 要先下 BGE 模型
-- **PDF 渲染依赖 polyfill**：黑洞.exe 入口有 ~25 行 DOMMatrix stub；不影响 PDF 文本提取
+- **PDF 渲染依赖 polyfill**：SAG.exe 入口有 ~25 行 DOMMatrix stub；不影响 PDF 文本提取
 - **sqlite-vec Windows x64 only**：macOS / Linux 用户需要从源码编译 native 包
 
 ## 7. 给管理员的：换 SQLite → Postgres（可选）
@@ -294,6 +294,6 @@ Postgres 模式只在源码模式生效；exe 版硬编码 SQLite（`db/sqlite-d
 
 **出问题先看的东西**：
 1. Trae 输出面板的 "MCP" 日志（stdio 模式）
-2. `黑洞.exe` 的 stdout（HTTP 模式 / Web UI）
+2. `SAG.exe` 的 stdout（HTTP 模式 / Web UI）
 3. `data/sag.db` 是否被 SQLite 锁（一个进程写、多个进程读不会出问题）
 4. `.env` 的 LLM/Embedding API key 是否填了

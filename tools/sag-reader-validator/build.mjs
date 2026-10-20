@@ -5,7 +5,7 @@
 //     installed on the target machine. Other computers' agents may be
 //     running SAG on stripped-down VMs.
 //   - The packaged exe embeds its own SHA-256 as the signing key seed,
-//     so 黑洞.exe can detect "this validator binary is not the one I
+//     so SAG.exe can detect "this validator binary is not the one I
 //     was built against".
 //
 // Usage:

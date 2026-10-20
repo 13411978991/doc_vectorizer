@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // sync-bundle-keep-exe.mjs — Update the user's win-unpacked/ install with
 // the latest native-cache + manifests + sidecars WITHOUT touching the
-// 本地知识检索-后端.exe (which may be locked by a running backend PID). The
+// SAG-backend.exe (which may be locked by a running backend PID). The
 // runtime entry inside the SEA exe reads
 // <exe-dir>/<basename>.native-map.manifest.json at startup, so swapping
 // the manifest + native-cache is enough to load new code on the next
 // fresh boot — even with the old .exe.
 //
-// Used when the user has a long-lived 本地知识检索-后端.exe they want to keep
+// Used when the user has a long-lived SAG-backend.exe they want to keep
 // running and we just need to refresh the on-disk artifacts for the
 // NEXT time they restart.
 
@@ -51,20 +51,20 @@ function copyDir(src, dst, exclude = new Set()) {
   }
 }
 
-const SKIP = new Set(["本地知识检索-后端.exe"]);
+const SKIP = new Set(["SAG-backend.exe"]);
 const SIDE_FILES = [
-  "本地知识检索-后端.exe.stripped-sig.marker",
-  "本地知识检索-后端.native-map.manifest.json",
-  "本地知识检索-后端.migrations.json",
-  "本地知识检索-后端.scripts.json",
-  "本地知识检索-mcp.exe",
-  "本地知识检索-mcp.exe.stripped-sig.marker",
-  "本地知识检索-mcp.native-map.manifest.json",
-  "本地知识检索-mcp.migrations.json",
-  "本地知识检索-ingest-worker.exe",
-  "本地知识检索-ingest-worker.exe.stripped-sig.marker",
-  "本地知识检索-ingest-worker.native-map.manifest.json",
-  "本地知识检索-ingest-worker.migrations.json",
+  "SAG-backend.exe.stripped-sig.marker",
+  "SAG-backend.native-map.manifest.json",
+  "SAG-backend.migrations.json",
+  "SAG-backend.scripts.json",
+  "SAG-mcp.exe",
+  "SAG-mcp.exe.stripped-sig.marker",
+  "SAG-mcp.native-map.manifest.json",
+  "SAG-mcp.migrations.json",
+  "SAG-ingest-worker.exe",
+  "SAG-ingest-worker.exe.stripped-sig.marker",
+  "SAG-ingest-worker.native-map.manifest.json",
+  "SAG-ingest-worker.migrations.json",
   ".env.example",
   "mcp-config.json"
 ];
@@ -72,7 +72,7 @@ const SIDE_FILES = [
 console.log("[sync] USER_UNPACKED =", USER_UNPACKED);
 console.log("[sync] RELEASE_DIR =", RELEASE_DIR);
 
-// Copy sidecar files (NOT 本地知识检索-后端.exe)
+// Copy sidecar files (NOT SAG-backend.exe)
 for (const f of SIDE_FILES) {
   const src = join(RELEASE_DIR, f);
   const dst = join(USER_UNPACKED, "resources", f);
@@ -141,4 +141,4 @@ if (existsSync(appSrc)) {
   console.log("[sync] ! no dev resources/app/ — run scripts/refresh-win-unpacked.mjs first");
 }
 
-console.log("[sync] ✓ done — close existing window, reopen 本地知识检索.exe to pick up new code");
+console.log("[sync] ✓ done — close existing window, reopen SAG.exe to pick up new code");

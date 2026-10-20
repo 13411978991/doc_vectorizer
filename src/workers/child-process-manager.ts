@@ -1,7 +1,7 @@
 /**
  * src/workers/child-process-manager.ts — DEPRECATED stub.
  *
- * 2026-08-10: the 黑洞-ingest-worker.exe child process design from
+ * 2026-08-10: the SAG-ingest-worker.exe child process design from
  * 失败原因/2026-08-10-sag-分阶段双进程并行方案.md was rolled back.
  * Real-world wall-clock savings on local ONNX were only a few
  * percent (because both processes end up on the same single

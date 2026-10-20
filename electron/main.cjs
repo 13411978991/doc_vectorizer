@@ -1,8 +1,9 @@
-// electron/main.js — 本地知识检索 (Local Knowledge Retriever) desktop shell.
+// electron/main.js — SAG desktop shell. Spawns the SEA-built
+// `SAG-backend.exe` and wraps it in a chromium window.
 //
 // Architecture
 // ------------
-// Electron is the GUI shell. On boot it spawns the SEA-built `本地知识检索-后端.exe`
+// Electron is the GUI shell. On boot it spawns the SEA-built `SAG-backend.exe`
 // as a child process. That binary is the existing Fastify HTTP server
 // (port 4173 by default). Electron then opens a native window pointing
 // at `http://127.0.0.1:4173`. End users get one icon, one taskbar entry,
@@ -20,8 +21,8 @@
 // Where the .exe lives
 // -------------------
 // During development (running via `electron .`), we look for it in
-// repo/release/本地知识检索-后端.exe. In a packaged build (`electron-builder`),
-// extraResources places it in process.resourcesPath/本地知识检索-后端.exe so the
+// repo/release/SAG-backend.exe. In a packaged build (`electron-builder`),
+// extraResources places it in process.resourcesPath/SAG-backend.exe so the
 // app stays self-contained.
 //
 // Logging
@@ -60,20 +61,20 @@ function sagUrl() {
 const READY_TIMEOUT_MS = Number(process.env.SAG_READY_TIMEOUT_MS || 120000);
 const READY_POLL_INTERVAL_MS = 250;
 
-// Resolve where to find the backend .exe (本地知识检索-后端.exe).
-//   * packaged: process.resourcesPath/本地知识检索-后端.exe (electron-builder default)
-//   * dev:      <repo>/release/本地知识检索-后端.exe
+// Resolve where to find the backend .exe (SAG-backend.exe).
+//   * packaged: process.resourcesPath/SAG-backend.exe (electron-builder default)
+//   * dev:      <repo>/release/SAG-backend.exe
 function resolveSagBinaryPath() {
-  // Packaged build: <resourcesPath>/本地知识检索-后端.exe (we copy it there in
+  // Packaged build: <resourcesPath>/SAG-backend.exe (we copy it there in
   // scripts/build-desktop-manual.mjs so the runtime doesn't need to
   // know whether we're running in dev or production).
-  const packagedCandidate = path.join(process.resourcesPath || "", "本地知识检索-后端.exe");
+  const packagedCandidate = path.join(process.resourcesPath || "", "SAG-backend.exe");
   if (fs.existsSync(packagedCandidate)) {
     return packagedCandidate;
   }
-  // Dev: <repo>/release/本地知识检索-后端.exe (built via npm run build:windows).
+  // Dev: <repo>/release/SAG-backend.exe (built via npm run build:windows).
   const repoRoot = path.resolve(__dirname, "..", "..");
-  const devCandidate = path.join(repoRoot, "release", "本地知识检索-后端.exe");
+  const devCandidate = path.join(repoRoot, "release", "SAG-backend.exe");
   if (fs.existsSync(devCandidate)) {
     return devCandidate;
   }
@@ -138,11 +139,11 @@ function waitForEffectivePort(timeoutMs = 30000) {
 /**
  * Probe the SAG HTTP port BEFORE we spawn anything. Two scenarios:
  *
- *   (a) Port is closed (ECONNREFUSED)        → spawn 黑洞.exe ourselves.
+ *   (a) Port is closed (ECONNREFUSED)        → spawn SAG.exe ourselves.
  *   (b) Port is open AND /health returns 200 → an existing SAG
  *       backend is already running. Adopt it: don't spawn, don't
  *       kill, just point the window at it. This fixes the "flash
- *       crash" where a previous run was still alive (its 黑洞.exe
+ *       crash" where a previous run was still alive (its SAG.exe
  *       bound 4173); a fresh double-click would have its own child
  *       die with EADDRINUSE within ~100 ms and tear the window
  *       down with it.
@@ -189,14 +190,14 @@ async function probeBackendPort() {
 function startSagBackend() {
   const sagPath = resolveSagBinaryPath();
   if (!sagPath) {
-    logLine(logStream, "[main]", "FATAL: 本地知识检索-后端.exe not found in release/ or resources/");
+    logLine(logStream, "[main]", "FATAL: SAG-backend.exe not found in release/ or resources/");
     dialog.showErrorBox(
-      "本地知识检索 启动失败",
-      "找不到 本地知识检索-后端.exe。\n\n期望位置：\n  " +
-        path.join(process.resourcesPath || "", "本地知识检索-后端.exe") +
+      "SAG 启动失败",
+      "找不到 SAG-backend.exe。\n\n期望位置：\n  " +
+        path.join(process.resourcesPath || "", "SAG-backend.exe") +
         "\n  " +
-        path.resolve(__dirname, "..", "release", "本地知识检索-后端.exe") +
-        "\n\n请确认 release/ 目录里有 本地知识检索-后端.exe，或重新构建桌面版。"
+        path.resolve(__dirname, "..", "release", "SAG-backend.exe") +
+        "\n\n请确认 release/ 目录里有 SAG-backend.exe，或重新构建桌面版。"
     );
     app.quit();
     return null;
@@ -205,7 +206,7 @@ function startSagBackend() {
   logLine(logStream, "[main]", `  cwd: ${path.dirname(sagPath)}`);
   logLine(logStream, "[main]", `  port: ${HTTP_PORT}`);
 
-  // Spawn the SEA-built 本地知识检索-后端.exe. We deliberately do NOT pass
+  // Spawn the SEA-built SAG-backend.exe. We deliberately do NOT pass
   // SAG_OPEN_BROWSER=true because that would launch a browser
   // (defeating the entire point of the desktop shell). The SEA
   // server's GUI-subsystem exe does NOT pop a console, and stdout
@@ -259,8 +260,8 @@ function startSagBackend() {
       // Backend died while user was using the app — surface the error
       // and close the window so they're not staring at a stale UI.
       dialog.showErrorBox(
-        "本地知识检索 后端已退出",
-        `本地知识检索-后端.exe 进程意外终止（code=${code}, signal=${signal}）。\n\n` +
+        "SAG-backend 已退出",
+        `SAG-backend.exe 进程意外终止（code=${code}, signal=${signal}）。\n\n` +
           `日志位置：\n${logsDir}\n\n请查看日志后重新启动。`
       );
       app.quit();
@@ -299,6 +300,13 @@ async function waitForBackendReady() {
 }
 
 function createMainWindow() {
+  // Window icon — same asset as the desktop exe / in-app logo. The
+  // SHELL EXE's icon (visible in Explorer / taskbar / shortcut) is set
+  // by electron-packager / electron-builder from scripts/icon.ico at
+  // package time, and the SEA-backend exe's icon is set by rcedit
+  // from scripts/icosag.ico after build:windows-exe. All three icons
+  // come from web/public/favicon.ico so the brand is unified.
+  const windowIconPath = path.join(__dirname, "..", "scripts", "icon.ico");
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -308,6 +316,7 @@ function createMainWindow() {
     backgroundColor: "#0f172a",
     autoHideMenuBar: true,
     show: false, // show after ready-to-show so no white flash
+    icon: fs.existsSync(windowIconPath) ? windowIconPath : undefined,
     webPreferences: {
       // Sandbox the renderer; we don't need Node access in the UI.
       contextIsolation: true,
@@ -377,7 +386,7 @@ ipcMain.handle("sag:restart-backend", async () => {
 });
 ipcMain.handle("sag:get-version", () => app.getVersion());
 
-// Single-instance lock so launching 黑洞-桌面.exe twice just
+// Single-instance lock so launching SAG.exe twice just
 // focuses the existing window instead of opening a duplicate.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -392,12 +401,12 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     // First: check if a SAG backend is already running on our port.
-    // If yes, ADOPT it — don't spawn a second 本地知识检索-后端.exe (it would fail
+    // If yes, ADOPT it — don't spawn a second SAG-backend.exe (it would fail
     // to bind the port and exit immediately, which used to manifest
     // as "open the app → flash → gone"). The pre-existing backend
     // could be:
-    //   - a previous 本地知识检索.exe run the user forgot to close
-    //   - a standalone 本地知识检索-后端.exe they launched directly from a shell
+    //   - a previous SAG.exe run the user forgot to close
+    //   - a standalone SAG-backend.exe they launched directly from a shell
     //   - a system service wrapper (future)
     // In all three cases the right behaviour is: open the window,
     // point it at the running port, leave the existing process
@@ -408,8 +417,8 @@ if (!gotLock) {
       logLine(logStream, "[main]", `port ${HTTP_PORT} is held by something that isn't SAG`);
       dialog.showErrorBox(
         "端口被占用",
-        `端口 ${HTTP_PORT} 已被其他进程占用，但响应不像 本地知识检索 后端。\n\n` +
-          `请关闭占用该端口的程序后重新启动 本地知识检索。\n\n` +
+        `端口 ${HTTP_PORT} 已被其他进程占用，但响应不像 SAG-backend。\n\n` +
+          `请关闭占用该端口的程序后重新启动 SAG。\n\n` +
           `日志：${logFile}`
       );
       app.quit();
@@ -422,8 +431,8 @@ if (!gotLock) {
       } catch (err) {
         logLine(logStream, "[main]", `backend failed to become ready: ${err.message}`);
         dialog.showErrorBox(
-          "本地知识检索 后端未就绪",
-          `等待 本地知识检索-后端.exe 就绪超时（${READY_TIMEOUT_MS}ms）。\n\n` +
+          "SAG-backend 未就绪",
+          `等待 SAG-backend.exe 就绪超时（${READY_TIMEOUT_MS}ms）。\n\n` +
             `可能原因：端口 ${HTTP_PORT} 附近被其他进程占用，或后端启动报错。\n` +
             `（后端在 ${HTTP_PORT}~${Number(HTTP_PORT) + 10} 范围内会自动选可用端口；` +
             `如果全部被占，后端会启动失败。）\n\n` +
@@ -450,7 +459,7 @@ if (!gotLock) {
     shuttingDown = true;
     // Only kill the SAG child if WE spawned it. If we adopted an
     // existing backend (a previous SAG run still alive, a standalone
-    // 本地知识检索-后端.exe the user started from a shell, etc.) — leave it
+    // SAG-backend.exe the user started from a shell, etc.) — leave it
     // alone. That process belongs to the user; we have no way to
     // know if they want it kept running for a different consumer.
     if (sagProcess && sagProcessSpawnedByUs) {
@@ -461,7 +470,7 @@ if (!gotLock) {
         logLine(logStream, "[main]", `failed to kill child: ${e}`);
       }
     } else if (sagProcessSpawnedByUs === false) {
-      logLine(logStream, "[main]", "before-quit: leaving external 本地知识检索-后端.exe running (we did not spawn it)");
+      logLine(logStream, "[main]", "before-quit: leaving external SAG-backend.exe running (we did not spawn it)");
     }
     try {
       logStream.end();

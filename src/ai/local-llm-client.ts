@@ -219,7 +219,7 @@ export function getLoadedLocalLlmInfo(): LoadedModelInfo | null {
  *      the Electron shell spawns, so for the SEA runtime this branch
  *      is always skipped.
  *   3. SEA runtime (Electron-shell spawn) — exe lives at
- *      `<install>/resources/本地知识检索-后端.exe`, so exeDir is
+ *      `<install>/resources/SAG-backend.exe`, so exeDir is
  *      `<install>/resources/`. Models ship at `<exeDir>/models/<file>`.
  *      Try `<exeDir>/models/<rel>` first.
  *   4. Cwd-walk fallback — node and the SEA binary are launched from
