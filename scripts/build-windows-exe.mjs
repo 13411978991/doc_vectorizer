@@ -212,12 +212,31 @@ async function ensureNode() {
   // script ships scripts/build/icosag.ico; missing icon is a no-op.
   const icoPath = join(__dirname, "icosag.ico");
   if (existsSync(icoPath)) {
-    const rcedit = process.env.RCEDIT_BIN || "rcedit";
-    const rr = spawnSync(rcedit, [exePath, "--set-icon", icoPath], { stdio: "inherit", shell: true });
-    if (rr.status === 0) {
-      log(`✓ icon: ${icoPath} (replaces Node.exe default icon)`);
-    } else {
-      log(`! rcedit failed (status ${rr.status}); continuing with default icon`);
+    // Pure-JS icon swap (no flaky native rcedit). We run it on a
+    // copy then atomically replace.
+    const peSetIcon = join(__dirname, "pe-set-icon.cjs");
+    const iconTmp = exePath + ".icon-tmp.exe";
+    const iconOut = exePath + ".icon-new.exe";
+    try {
+      copyFileSync(exePath, iconTmp);
+      const rr = spawnSync(
+        process.execPath,
+        [peSetIcon, iconTmp, iconOut, icoPath],
+        { stdio: "inherit" }
+      );
+      if (rr.status === 0) {
+        rmSync(exePath, { force: true });
+        renameSync(iconOut, exePath);
+        log(`✓ icon: ${icoPath} (replaces Node.exe default icon)`);
+      } else {
+        try { rmSync(iconTmp, { force: true }); } catch { /* ignore */ }
+        try { rmSync(iconOut, { force: true }); } catch { /* ignore */ }
+        log(`! pe-set-icon failed; continuing with default icon`);
+      }
+    } catch (err) {
+      log(`! icon rewrite threw: ${err.message}`);
+      try { rmSync(iconTmp, { force: true }); } catch { /* ignore */ }
+      try { rmSync(iconOut, { force: true }); } catch { /* ignore */ }
     }
   }
   return exePath;

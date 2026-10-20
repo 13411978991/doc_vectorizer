@@ -212,26 +212,39 @@ const SAG_EXE_FINAL = join(WIN_UNPACKED, "SAG 桌面版.exe");
 console.log("[manual-build] desktop exe =", SAG_EXE_FINAL);
 copyFileSync(ELECTRON_EXE, SAG_EXE_FINAL);
 
-// 2b. Rewrite the desktop exe's icon via rcedit so Explorer /
-//     taskbar / shortcut all show the SAG brand mark. We do this
-//     BEFORE renaming the binary so the resource section is still
-//     in the standard Electron shape — same pattern as build-windows-
-//     exe.mjs which rcedits the SEA backend after build.
-const SHELL_ICO = join(__dirname, "icon.ico");
-if (existsSync(SHELL_ICO)) {
-  const rcedit = process.env.RCEDIT_BIN || "rcedit";
-  const rceditResult = spawnSync(
-    rcedit,
-    [SAG_EXE_FINAL, "--set-icon", SHELL_ICO],
-    { stdio: "inherit", shell: true }
-  );
-  if (rceditResult.status === 0) {
-    console.log("[manual-build]   ✓ icon rewritten to scripts/icon.ico");
-  } else {
-    console.warn("[manual-build]   rcedit failed; keeping default icon");
+// 2b. Rewrite the desktop exe's icon via the pure-JS pe-set-icon
+//     helper (scripts/pe-set-icon.cjs) so Explorer / taskbar /
+//     shortcut all show the SAG brand mark. We switched from the
+//     rcedit binary to a pure-JS rewrite after rcedit proved flaky
+//     on Windows ("Unable to commit changes" ~50% of attempts on
+//     Electron's 188 MB exe, even on a freshly-made copy).
+const SHELL_ICO = join(ROOT, "scripts", "icon.ico");
+const PE_SET_ICON = join(ROOT, "scripts", "pe-set-icon.cjs");
+if (existsSync(SHELL_ICO) && existsSync(PE_SET_ICON)) {
+  const iconTmp = SAG_EXE_FINAL + ".icon-tmp.exe";
+  try {
+    copyFileSync(SAG_EXE_FINAL, iconTmp);
+    const iconResult = spawnSync(
+      process.execPath,
+      [PE_SET_ICON, iconTmp, iconTmp + ".new.exe", SHELL_ICO],
+      { stdio: "inherit" }
+    );
+    if (iconResult.status === 0) {
+      rmSync(SAG_EXE_FINAL, { force: true });
+      renameSync(iconTmp + ".new.exe", SAG_EXE_FINAL);
+      console.log("[manual-build]   ✓ icon rewritten to scripts/icon.ico");
+    } else {
+      try { rmSync(iconTmp, { force: true }); } catch { /* ignore */ }
+      try { rmSync(iconTmp + ".new.exe", { force: true }); } catch { /* ignore */ }
+      console.warn("[manual-build]   pe-set-icon failed; keeping default icon");
+    }
+  } catch (err) {
+    console.warn(`[manual-build]   icon rewrite threw: ${err.message}`);
+    try { rmSync(iconTmp, { force: true }); } catch { /* ignore */ }
+    try { rmSync(iconTmp + ".new.exe", { force: true }); } catch { /* ignore */ }
   }
 } else {
-  console.warn("[manual-build]   scripts/icon.ico missing; using default icon");
+  console.warn("[manual-build]   scripts/icon.ico or pe-set-icon.cjs missing; using default icon");
 }
 
 // 3. resources/app/ holds the Electron app code (NOT asar-packed).
@@ -291,6 +304,13 @@ for (const f of readdirSync(join(ROOT, "release"))) {
     } else if (statSync(src).isDirectory()) {
       // web/dist/ — the SAG backend reads <resourcesPath>/web/dist
       // at runtime to serve the SPA bundle.
+      //
+      // Wipe the destination first. Vite emits content-hashed asset
+      // filenames (index-<hash>.js), so a stale build leaves orphaned
+      // old bundles behind and the tree grows on every rebuild. Worse,
+      // if index.html ever lags behind it can point at a stale hash
+      // and the app silently ships the previous UI.
+      try { rmSync(dst, { recursive: true, force: true }); } catch { /* ignore */ }
       copyDir(src, dst);
     }
   }

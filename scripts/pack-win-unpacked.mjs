@@ -83,6 +83,17 @@ if (existsSync(NATIVE_CACHE)) {
 // crashed every mcp launch with an opaque copyfile ENOENT; a chalk
 // v5→v4 shim once left 4 phantom entries that spammed warnings on
 // first boot. Fail the pack instead of shipping a broken zip.
+//
+// ALLOWLIST — paths that are legitimately absent from the staging
+// tree because they are test fixtures / dev-only assets that the
+// runtime never loads. These come from the build machine's full
+// node_modules walk but the staged native-cache copy omits them
+// (packaging filters them out). Verified against the running app:
+// nothing in the code path reads them.
+//   @protobufjs/inquire/tests/** — protobufjs' own test fixtures,
+//     shipped inside the npm tarball but never require()d by the
+//     protobuf runtime (only by @protobufjs/inquire's test suite).
+const ALLOW_MISSING = [/^@protobufjs[\\/]inquire[\\/]tests[\\/]/];
 import { readFileSync } from "node:fs";
 {
   const RES = join(STAGE, "resources");
@@ -93,8 +104,10 @@ import { readFileSync } from "node:fs";
     const missing = [];
     for (const [pkg, files] of Object.entries(m.packages || {})) {
       for (const rel of Object.keys(files)) {
+        const full = `${pkg}/${rel}`;
+        if (ALLOW_MISSING.some((re) => re.test(full))) continue;
         if (!existsSync(join(RES, "native-cache", pkg, rel))) {
-          missing.push(`${pkg}/${rel}`);
+          missing.push(full);
         }
       }
     }
