@@ -1,0 +1,5 @@
+-- Vendor-supplied defaults that previously leaked into fresh installs are
+-- cleared by 015_clear_default_ai_endpoints.sql. This migration remains
+-- in place for upgrade compatibility: it keeps the row's metadata
+-- (timeout, retry count, search-mode flags) intact while leaving the
+-- cleared endpoints as-is. Do not reintroduce vendor defaults here.

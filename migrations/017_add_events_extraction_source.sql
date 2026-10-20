@@ -1,0 +1,21 @@
+-- Migration 017 — events.extraction_source (2026-09-28)
+--
+-- Records which extractor actually produced each event. Two values are
+-- used at runtime:
+--   - 'remote-llm'      — produced by the configured OpenAI-compatible
+--                         chat/completions endpoint (the api branch in
+--                         OpenAICompatibleLlmClient.extractEventsFromChunk)
+--   - 'regex-fallback'  — produced by the local regex/heuristic pipeline.
+--                         Triggered when:
+--                           * llmProvider === 'local' (legacy path), or
+--                           * llmProvider === 'api' but the remote LLM
+--                             call throws (timeout / 5xx / parse error).
+--                             The LLM client catches and falls back, then
+--                             stamps this so the UI can surface a warning.
+--
+-- The column is NULL for events inserted before this migration. New
+-- ingestions always populate it (default 'remote-llm' for the api
+-- path; 'regex-fallback' for the local path). The frontend renders
+-- a `fallback *N` badge on the source document when at least one of
+-- its events has extraction_source = 'regex-fallback'.
+ALTER TABLE events ADD COLUMN extraction_source TEXT;

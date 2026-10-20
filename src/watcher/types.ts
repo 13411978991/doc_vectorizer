@@ -1,0 +1,142 @@
+/**
+ * Watched folders (Sprint 1) — public types
+ *
+ * A user configures a local folder. SAG keeps a Source associated with the folder
+ * and a file_manifest row per observed file. On every detected change (or scheduled
+ * scan) we re-ingest the file into the knowledge base.
+ *
+ * Deletion is HARD: deleting a file (or its folder) permanently removes its document
+ * via `webuiService.deleteDocument()`.
+ */
+
+export type ManifestStatus = "pending" | "syncing" | "synced" | "partial" | "failed" | "deleted";
+// `completed_with_errors` is the new "task ran end-to-end but at least one file
+// failed to ingest" state. It lets the UI distinguish "the folder scan crashed"
+// (`failed`, red badge, surfaces last_scan_error) from "we got through 99% of
+// the files but a few threw" (`completed_with_errors`, green-ish badge with a
+// small ×N counter and a retry entry point). Single-file failures should
+// never poison the task-level status — they're surfaced through
+// `filesFailed` + the manifest `status="failed"` rows.
+export type SyncRunStatus = "running" | "completed" | "completed_with_errors" | "failed";
+export type SyncRunTrigger = "manual" | "scan" | "event" | "startup";
+
+export interface FiletypeFilter {
+  /**
+   * Whitelist (lowercase, with leading dot). `undefined` / empty =
+   * accept all supported types. v2 dropped the earlier blacklist field
+   * — operators express "exclude nothing" by leaving the whitelist empty.
+   */
+  whitelist?: string[];
+  /** Maximum file size in bytes. Files larger than this are skipped. */
+  maxBytes?: number;
+}
+
+export interface WatchedFolderRecord {
+  id: string;
+  tenantId: string;
+  path: string;
+  displayName: string;
+  sourceId: string;
+  enabled: boolean;
+  recursive: boolean;
+  filetypeFilter: FiletypeFilter;
+  metadata: Record<string, unknown>;
+  lastScanAt?: string | null;
+  lastError?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface FileManifestRecord {
+  id: string;
+  folderId: string;
+  relPath: string;
+  mtimeMs?: number | null;
+  inode?: number | null;
+  sizeBytes?: number | null;
+  sha1?: string | null;
+  status: ManifestStatus;
+  documentId?: string | null;
+  lastSyncedAt?: string | null;
+  lastError?: string | null;
+  // Wall-clock timing for the most-recent sync attempt on this file.
+  // Populated by sync-orchestrator after `ingestDocument` resolves
+  // (success or failure). `lastSyncStartedAt` is an ISO string in UTC;
+  // `lastSyncDurationMs` is the elapsed millis from "we started the
+  // ingestion call" to "the call returned". Both are null until the
+  // orchestrator writes them — the UI uses "—" for missing values.
+  lastSyncStartedAt?: string | null;
+  lastSyncDurationMs?: number | null;
+  // P-events-ui: counts of events extracted for this file's document,
+  // broken down by extraction source. Surfaced in the file manifest
+  // table so the operator can see at a glance which files were partly
+  // or fully extracted via the regex fallback (vs the configured LLM).
+  // Both fields are 0 for files that have not yet produced a document
+  // (e.g. `pending` rows); null when the row's `documentId` is null
+  // and we couldn't compute the aggregate.
+  eventCount?: number | null;
+  fallbackEventCount?: number | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SyncRunRecord {
+  id: string;
+  folderId: string;
+  startedAt: string;
+  finishedAt?: string | null;
+  status: SyncRunStatus;
+  trigger: SyncRunTrigger;
+  filesAdded: number;
+  filesUpdated: number;
+  filesDeleted: number;
+  filesFailed: number;
+  errorMessage?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface SyncStats {
+  added: number;
+  updated: number;
+  deleted: number;
+  failed: number;
+}
+
+export interface CreateWatchedFolderInput {
+  tenantId: string;
+  path: string;
+  displayName?: string;
+  enabled?: boolean;
+  recursive?: boolean;
+  filetypeFilter?: FiletypeFilter;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateWatchedFolderInput {
+  displayName?: string;
+  enabled?: boolean;
+  recursive?: boolean;
+  filetypeFilter?: FiletypeFilter;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Default set of extensions the watcher is allowed to ingest.
+ * Mirrors the in-process Node converter's supported list. Operators can
+ * override the per-folder whitelist via `FiletypeFilter.whitelist` —
+ * leaving it empty (the folder-creation UI default since v2) means the
+ * six Office formats below are accepted and everything else is skipped.
+ *
+ * The historical 10-entry list (md / txt / pdf / csv) was dropped on
+ * 2026-09 because the typical deployment only ships Office documents
+ * to ingest; markdown / txt / pdf / csv are easy to add back via the
+ * whitelist field when needed.
+ */
+export const DEFAULT_SUPPORTED_EXTENSIONS: string[] = [
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".xls",
+  ".xlsx"
+];

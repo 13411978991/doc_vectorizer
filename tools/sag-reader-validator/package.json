@@ -1,0 +1,14 @@
+{
+  "name": "sag-reader-validator",
+  "version": "1.0.0",
+  "description": "Validates sag-readers/*.py and sag-readers/*.ps1 reader scripts before 黑洞.exe will dispatch to them. Outputs a signed .sag-validator-cert.json certificate next to each accepted reader.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "sag-reader-validator": "src/main.mjs"
+  },
+  "scripts": {
+    "validate": "node src/main.mjs",
+    "build": "node build.mjs"
+  }
+}

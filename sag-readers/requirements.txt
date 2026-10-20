@@ -1,0 +1,19 @@
+# SAG readers default Python dependencies.
+#
+# Install: pip install -r sag-readers/requirements.txt
+#
+# The exe tries each reader's --meta first; readers that fail to import
+# their deps will simply exit 2 ("unsupported") and the exe moves on to
+# the next reader in the chain. So missing a dep doesn't break the app,
+# it just falls back to a different reader.
+
+# Plain-text / markdown / CSV — stdlib only, no third-party deps needed.
+
+# PDF
+pypdf>=4.0           # fast pure-Python reader, handles most PDFs
+pdfplumber>=0.10     # better at complex layouts; optional fallback
+
+# Office OOXML
+python-docx>=1.0     # .docx
+python-pptx>=0.6     # .pptx
+openpyxl>=3.1        # .xlsx

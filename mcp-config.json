@@ -1,0 +1,9 @@
+{
+  "_comment": "Paste this into your MCP client (Trae / Claude Desktop / Cursor / etc). The HTTP transport requires the SAG main server to be running with MCP_TRANSPORT=http in its .env. See README.txt for full setup.",
+  "mcpServers": {
+    "sag": {
+      "type": "http",
+      "url": "http://127.0.0.1:4174/mcp"
+    }
+  }
+}

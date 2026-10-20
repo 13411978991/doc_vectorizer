@@ -1,0 +1,16 @@
+# SHA256.txt — content fingerprint of the validator source.
+# Updating any line below requires:
+#   1. A code review of the change
+#   2. A deliberate update of EXPECTED_VALIDATOR_SHA256 in
+#      src/watcher/external-reader.ts (which trusts ONLY this binary's hash)
+# Without both, any cert produced by a tampered validator will be rejected
+# by 黑洞.exe at dispatch time.
+#
+# Composite fingerprint algorithm: SHA-256 of the per-file hashes listed below.
+
+build.mjs	e71a5432cd3f35855399663883b62a6f12793b3af1cc78b8c0e1b20bf3058219
+package.json	ef1392f3e3b87be016dc2cc2ca5c7a60b4968f65e2e3246730f7b68a173e029c
+POLICY.md	f78c03aee6551eedb1b50a47630039b1fba2ee1a58e1dc6eaf9dab7d3d56cbbd
+README.md	4d13bea7d2d8e10d78eca31086bd1bb072d3b51aa8f93fdbc30b34f6453f0103
+src/main.mjs	eb62d5dad72ac639053a3902f3b6a46f9b362772adccf82f178a750df776b018
+composite	6b73fe7ff5938f55665af9bc58ae355b965b7cd6504686036916a8ffc90d17b6

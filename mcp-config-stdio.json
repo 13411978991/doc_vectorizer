@@ -1,0 +1,13 @@
+{
+  "_comment": "Paste this into Trae / Claude Desktop / Cursor → MCP servers. Both .exe (黑洞.exe and 黑洞-mcp.exe) live next to each other after unzip; this config spawns 黑洞-mcp.exe (stdio transport — no need to start 黑洞.exe first). REQUIRED: set SAG_MCP_SOURCE_ID below to either a project UUID (expands to all bound auto-sources) OR a single auto-source UUID. Empty = searches whole tenant, which usually returns too much. To find UUIDs: open 黑洞.exe → Watched Folders / Sources page → copy the project's id, or run `sqlite3 data\\sag.db \"select id, name, kind from sources\"`.",
+  "mcpServers": {
+    "sag": {
+      "command": "INSTALL_DIR\\黑洞-mcp.exe",
+      "args": [],
+      "env": {
+        "DEFAULT_TENANT_ID": "default",
+        "SAG_MCP_SOURCE_ID": "REPLACE_ME_WITH_A_PROJECT_OR_SOURCE_UUID"
+      }
+    }
+  }
+}

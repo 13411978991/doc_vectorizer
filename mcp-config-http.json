@@ -1,0 +1,25 @@
+{
+  "_comment": "HTTP transport — copy into Trae/Claude Desktop/Cursor MCP servers. Requires 黑洞.exe running with MCP_TRANSPORT=http in .env (restarts on the 4174 port). SAG-MCP-Source-Id is REQUIRED (MCP_REQUIRE_SOURCE_ID=true) — pick the project you want the assistant to scope to. Without it, 黑洞.exe returns 401. Empty array below; fill in one of the project UUIDs from `GET /api/sources`.",
+  "mcpServers": {
+    "sag": {
+      "type": "http",
+      "url": "http://127.0.0.1:4174/mcp",
+      "headers": {
+        "SAG-MCP-Source-Id": "<paste-project-uuid-here>"
+      }
+    }
+  },
+  "_availableProjects": {
+    "_comment": "GET /api/sources?tenantId=default returns the full list. Pick one:",
+    "盘点表": "10588ad9-ed27-48ee-96a0-743f46e96c31",
+    "汇报ppt": "12ac2a2a-e6e6-4fa2-b002-68a705ada04b",
+    "01": "1df00a2d-cb48-4859-9acc-9d25c427c4c7",
+    "references": "3b045232-5113-459e-b691-a9271cdf94f5",
+    "5-审计报告": "3e2c108f-0ace-4251-aa07-6af291268015",
+    "汇集功能": "59bfcc4d-2da3-43b1-a539-9fe605ad0d36",
+    "PROBE-UI-ms5hyc1n": "622ceb94-1953-49ee-9d79-62fc121351f2",
+    "02": "acb11359-061b-46d6-a3f9-e0021bb25751",
+    "向量化测试根目录": "eef37351-4892-42c3-8e11-d637babd60fa",
+    "03": "f7c765ee-b179-467d-8e2f-2a889e0abccc"
+  }
+}

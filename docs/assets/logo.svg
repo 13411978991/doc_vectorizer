@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Folder body -->
+  <path d="M6 18a4 4 0 0 1 4-4h12l4 4h28a4 4 0 0 1 4 4v22a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V18z"
+        fill="#6366f1" fill-opacity="0.12" stroke="#6366f1" stroke-width="2.5"
+        stroke-linejoin="round"/>
+  <!-- Folder tab -->
+  <path d="M6 18a4 4 0 0 1 4-4h12l4 4" stroke="#6366f1" stroke-width="2.5"
+        stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- Vector dots row 1 (scattered, like embedding space) -->
+  <circle cx="20" cy="32" r="2" fill="#6366f1"/>
+  <circle cx="30" cy="36" r="2" fill="#6366f1"/>
+  <circle cx="42" cy="30" r="2" fill="#6366f1"/>
+  <circle cx="50" cy="34" r="2" fill="#6366f1"/>
+  <!-- Vector dots row 2 -->
+  <circle cx="22" cy="40" r="2" fill="#a5b4fc"/>
+  <circle cx="34" cy="44" r="2" fill="#a5b4fc"/>
+  <circle cx="46" cy="42" r="2" fill="#a5b4fc"/>
+
+  <!-- Connecting line between two anchor points (showing "vector" mapping) -->
+  <path d="M20 32 L42 30" stroke="#6366f1" stroke-width="1.5" stroke-opacity="0.5"
+        stroke-linecap="round"/>
+</svg>

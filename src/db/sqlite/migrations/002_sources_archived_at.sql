@@ -1,0 +1,11 @@
+-- Add archived_at column to sources table.
+--
+-- The PG schema has had this column for a while, and repositories.ts /
+-- archiveService already reference it. The SQLite schema was missing it,
+-- which caused listSources / archiveSource / etc. to fail with
+-- "no such column: archived_at" on every page load.
+--
+-- ALTER TABLE ADD COLUMN is supported by SQLite and is a no-op if the
+-- column already exists only if wrapped in a check; we just rely on the
+-- migration being applied exactly once (schema_migrations tracks this).
+alter table sources add column archived_at text;

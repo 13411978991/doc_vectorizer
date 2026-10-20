@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "readerPath": "D:\\IT审计\\SAG-windows-pack\\doc_vectorizer\\sag-readers\\sag-read-txt.py",
+  "readerFilename": "sag-read-txt.py",
+  "readerExtension": ".txt",
+  "validatorSelfSha256": "dev-mode-no-self-hash",
+  "validatorSchemaVersion": 1,
+  "issuedAt": "2026-09-18T13:22:35.768Z",
+  "readerSha256": "29129f8e4237ea3d15d5caed01fe4c9de1f59fed9d351b8612a04240c2c2e133",
+  "readerSizeBytes": 5440,
+  "metaDeclaredExtensions": [
+    ".txt",
+    ".log",
+    ".text"
+  ],
+  "metaDeclaredLanguages": [
+    "zh",
+    "en",
+    "ja",
+    "ko",
+    "any"
+  ],
+  "checks": {
+    "meta-runs-and-valid": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "probe-accept": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "probe-reject": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "extract-exit-0": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "extract-stdout-utf8-no-bom-no-cr": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "extract-stderr-json": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "extract-no-binary-garbage": "387365d9adaf15da64ef0b6c6453b22eefc64332cec5da11e1c1ae9ef196fe5c",
+    "extract-non-empty": "20b0d627a8f6361cea8bbf3748f52d4076bd3a5987c2ebfd89d8a3155f941b96",
+    "memory-bound": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "time-bound": "379a5c88061e9c7b8d812504b05f656792499fa16961d3432d1f706454906733"
+  },
+  "signature": {
+    "algorithm": "HMAC-SHA256",
+    "value": "a3bae82049af9aa0b95ce4226007095af18dbc956b85a67b728e15b1b4742465"
+  }
+}

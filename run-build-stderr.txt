@@ -1,0 +1,25 @@
+Set-Location : Cannot find path 'E:\sag\瀹屾暣鍚庣鐗堟湰\婧愮爜\doc_vectorizer' because it does not exis
+t.
+At E:\sag\完整后端版本\源码\doc_vectorizer\run-build.ps1:3 char:1
++ Set-Location "E:\sag\瀹屾暣鍚庣鐗堟湰\婧愮爜\doc_vectorizer"
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (E:\sag\瀹屾暣鍚庣鐗堟湰\婧愮爜\doc_vectorizer:String) [S 
+   et-Location], ItemNotFoundException
+    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.SetLocationCommand
+ 
+Out-File : Could not find a part of the path 'E:\sag\瀹屾暣鍚庣鐗堟湰\婧愮爜\doc_vectorizer\run-build.lo
+g'.
+At E:\sag\完整后端版本\源码\doc_vectorizer\run-build.ps1:4 char:68
++ ... mjs" 2>&1 | Out-File -FilePath "E:\sag\瀹屾暣鍚庣鐗堟湰\婧愮爜\doc_vectorizer\r ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OpenError: (:) [Out-File], DirectoryNotFoundException
+    + FullyQualifiedErrorId : FileOpenFailure,Microsoft.PowerShell.Commands.OutFileCommand
+ 
+Out-File : Could not find a part of the path 'E:\sag\瀹屾暣鍚庣鐗堟湰\婧愮爜\doc_vectorizer\run-build-ex
+it.txt'.
+At E:\sag\完整后端版本\源码\doc_vectorizer\run-build.ps1:6 char:19
++ ... ode: $ec" | Out-File -FilePath "E:\sag\瀹屾暣鍚庣鐗堟湰\婧愮爜\doc_vectorizer\r ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OpenError: (:) [Out-File], DirectoryNotFoundException
+    + FullyQualifiedErrorId : FileOpenFailure,Microsoft.PowerShell.Commands.OutFileCommand
+ 

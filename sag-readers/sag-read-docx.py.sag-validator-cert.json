@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "readerPath": "D:\\IT审计\\SAG-windows-pack\\doc_vectorizer\\sag-readers\\sag-read-docx.py",
+  "readerFilename": "sag-read-docx.py",
+  "readerExtension": ".docx",
+  "validatorSelfSha256": "dev-mode-no-self-hash",
+  "validatorSchemaVersion": 1,
+  "issuedAt": "2026-09-15T15:27:34.799Z",
+  "readerSha256": "0db6ed5d9c87bfdea838b368a230a38e4bcc8fc494c8cc92843ab480f6205a50",
+  "readerSizeBytes": 4899,
+  "metaDeclaredExtensions": [
+    ".docx"
+  ],
+  "metaDeclaredLanguages": [
+    "zh",
+    "en",
+    "ja",
+    "ko",
+    "any"
+  ],
+  "checks": {
+    "meta-runs-and-valid": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "probe-accept": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "probe-reject": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "extract-exit-0": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "extract-stdout-utf8-no-bom-no-cr": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "extract-stderr-json": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "extract-no-binary-garbage": "387365d9adaf15da64ef0b6c6453b22eefc64332cec5da11e1c1ae9ef196fe5c",
+    "extract-non-empty": "a3c7e6101654cc2a72a6ff4b6c11a80c794a96cd0b516f54116197c48819be62",
+    "memory-bound": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "time-bound": "6cf5dd08185175c37e51949da1f8e4f7b53d8d44e2261e246619051fffe25f59"
+  },
+  "signature": {
+    "algorithm": "HMAC-SHA256",
+    "value": "f8e7815065c5d1cb900e3fdd256801b78d333c50267970b593218c235646432d"
+  }
+}
