@@ -22,6 +22,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { embeddingClient } from "../ai/embedding-client.js";
+import { aiSettingsService } from "../services/ai-settings-service.js";
 import { isSqlitePool, pool } from "../db/pool.js";
 import {
   getLoadedLocalLlmInfo,
@@ -56,22 +57,66 @@ interface HealthSnapshot {
   diskLow?: boolean;
 }
 
+// Embedding readiness for the liveness probe.
+//
+// This deliberately does NOT call `embeddingClient.testConnection()`.
+// With the local-bge provider that call loads the ONNX model and runs a
+// real forward pass, and the inference is synchronous — it blocks the
+// event loop for 8-9s. `/health` is polled by the Electron shell with a
+// 2s timeout while waiting for the backend to come up, so a blocking
+// probe made every poll time out and the shell reported "backend failed
+// to become ready within 120000ms" while the backend was in fact
+// healthy. A `Promise.race` timeout does not help: it lets the HTTP
+// response return early but the ONNX call keeps the event loop pinned,
+// which is why the port eventually stopped answering entirely.
+//
+// Instead we answer the question a liveness probe should ask — "is the
+// embedding path configured and are the model files present?" — which is
+// pure filesystem + config work with no inference. The real end-to-end
+// check stays on GET /api/test-connection, which is an explicit user
+// action and is allowed to take seconds.
+async function probeEmbedding(): Promise<{ loaded: boolean; model?: string }> {
+  try {
+    const settings = await aiSettingsService.getRuntimeSettings();
+    if (settings.embeddingProvider !== "api" && settings.embeddingProvider !== "local-bge") {
+      return { loaded: false };
+    }
+    if (settings.embeddingProvider === "api") {
+      // Remote endpoint: configured + reachable-looking is all we can
+      // say without spending a network round-trip on every probe.
+      return {
+        loaded: Boolean(settings.embeddingBaseUrl && settings.embeddingApiKey),
+        model: settings.embeddingModel || "(remote)"
+      };
+    }
+    // local-bge: confirm the model directory and an ONNX weight file
+    // actually exist. resolveLocalModelPath throws with a "not found"
+    // message when they don't, which is exactly the signal we want.
+    const { resolveLocalModelPath } = await import("../ai/model-path-resolver.js");
+    const dir = resolveLocalModelPath(settings.embeddingLocalModelPath || "");
+    const { statSync, readdirSync, existsSync } = await import("node:fs");
+    const path = await import("node:path");
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return { loaded: false };
+    const onnxDir = path.join(dir, "onnx");
+    const hasWeights =
+      existsSync(onnxDir) && readdirSync(onnxDir).some((f) => f.endsWith(".onnx"));
+    return {
+      loaded: hasWeights && existsSync(path.join(dir, "tokenizer.json")),
+      model: path.basename(dir)
+    };
+  } catch {
+    return { loaded: false };
+  }
+}
+
 async function buildHealthSnapshot(): Promise<HealthSnapshot> {
   const llmInfo = getLoadedLocalLlmInfo();
   const llmError = getLastLocalLlmLoadError();
 
-  // Embedding probe — cheap (single short string), catches broken
-  // endpoint config the same way the UI does. Best-effort: if the
-  // embedding client throws, surface that as `loaded: false`.
-  let embeddingLoaded = false;
-  let embeddingModel: string | undefined;
-  try {
-    const probe = await embeddingClient.testConnection();
-    embeddingLoaded = probe.ok;
-    embeddingModel = probe.model;
-  } catch {
-    embeddingLoaded = false;
-  }
+  // Embedding state — cached / bounded, see probeEmbedding() above.
+  // The probe is best-effort: if the embedding client throws, surface
+  // that as `loaded: false`.
+  const { loaded: embeddingLoaded, model: embeddingModel } = await probeEmbedding();
 
   // Watcher queue depth — read directly from the queue module so
   // we don't pull in the whole watcher subsystem.

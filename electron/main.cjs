@@ -116,7 +116,14 @@ let shuttingDown = false;
 // read this, so a 4173-occupied case boots the UI on the actual
 // chosen port instead of timing out at 120s.
 let effectivePort = Number(process.env.SAG_HTTP_PORT || process.env.HTTP_PORT || 4173);
-let effectivePortPromise = null; // resolves once we see SAG_BOUND_PORT= (or default)
+// Kept in module scope rather than as a property hung off the promise:
+// `waitForEffectivePort()` can be entered twice before the first call
+// finishes assigning `effectivePortPromise`, and the stdout handler
+// then tries to write `_resolve` onto a still-null value — which
+// surfaced as "Cannot set properties of null (setting '_resolve')"
+// and aborted startup even though the backend came up fine.
+let effectivePortPromise = null;
+let publishEffectivePort = null; // (port) => void, set while the promise is pending
 function getEffectivePort() {
   return effectivePort;
 }
@@ -124,11 +131,13 @@ function waitForEffectivePort(timeoutMs = 30000) {
   if (effectivePortPromise) return effectivePortPromise;
   effectivePortPromise = new Promise((resolve) => {
     const t = setTimeout(() => {
+      publishEffectivePort = null;
       logLine(logStream, "[main]", `no SAG_BOUND_PORT marker within ${timeoutMs}ms; assuming default ${effectivePort}`);
       resolve(effectivePort);
     }, timeoutMs);
-    effectivePortPromise._resolve = (port) => {
+    publishEffectivePort = (port) => {
       clearTimeout(t);
+      publishEffectivePort = null;
       effectivePort = port;
       resolve(port);
     };
@@ -242,8 +251,8 @@ function startSagBackend() {
         const port = Number(m[1]);
         if (Number.isFinite(port) && port > 0 && port < 65536) {
           logLine(logStream, "[main]", `backend reports SAG_BOUND_PORT=${port} (effectivePort was ${effectivePort})`);
-          if (effectivePortPromise && effectivePortPromise._resolve) {
-            effectivePortPromise._resolve(port);
+          if (typeof publishEffectivePort === "function") {
+            publishEffectivePort(port);
           }
         }
       }
