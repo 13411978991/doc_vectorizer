@@ -15,6 +15,7 @@ import {
   Folder,
   FolderOpen,
   Loader2,
+  MessageSquare,
   MoreHorizontal,
   Pause,
   Play,
@@ -1880,16 +1881,9 @@ function ProjectRail(props: {
             collide with the title or its own icon.
           */}
           <div className="flex items-center gap-2">
-            {/* Brand mark — same asset as the desktop exe icon and the
-                browser favicon. img (not lucide svg) so it stays visually
-                identical across shell, web tab, and in-app sidebar. */}
-            <img
-              src="/favicon.ico"
-              alt="SAG"
-              width={32}
-              height={32}
-              className="h-8 w-8 shrink-0 rounded-md"
-            />
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
+              <MessageSquare className="h-4 w-4" />
+            </div>
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-semibold">SAG</div>
               <div className="truncate text-xs text-muted-foreground">{t("自动化文件检索工作台", "Automated document retrieval workbench")}</div>
