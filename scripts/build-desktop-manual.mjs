@@ -208,7 +208,7 @@ for (const f of readdirSync(ELECTRON_DIST)) {
 //    "this is a packaged app" pattern — and our `app/` directory
 //    gets bypassed, so main.cjs never runs. Naming the exe after
 //    the product (with a non-ASCII suffix) sidesteps that path.
-const SAG_EXE_FINAL = join(WIN_UNPACKED, "SAG 桌面版.exe");
+const SAG_EXE_FINAL = join(WIN_UNPACKED, "SAG-桌面版.exe");
 console.log("[manual-build] desktop exe =", SAG_EXE_FINAL);
 copyFileSync(ELECTRON_EXE, SAG_EXE_FINAL);
 
@@ -218,6 +218,14 @@ copyFileSync(ELECTRON_EXE, SAG_EXE_FINAL);
 //     rcedit binary to a pure-JS rewrite after rcedit proved flaky
 //     on Windows ("Unable to commit changes" ~50% of attempts on
 //     Electron's 188 MB exe, even on a freshly-made copy).
+//
+//     NOTE: pe-set-icon was briefly suspected of corrupting the shell
+//     — a launch failed with 0xC0000135 / STATUS_DLL_NOT_FOUND right
+//     after the rewrite. That was a red herring: the machine was
+//     missing C:\Windows\System32\vcruntime140_1.dll, which breaks
+//     every Electron binary on the box regardless of the rewrite.
+//     Re-verified on a healthy machine — the rewritten shell launches
+//     and stays up.
 const SHELL_ICO = join(ROOT, "scripts", "icon.ico");
 const PE_SET_ICON = join(ROOT, "scripts", "pe-set-icon.cjs");
 if (existsSync(SHELL_ICO) && existsSync(PE_SET_ICON)) {
@@ -232,6 +240,9 @@ if (existsSync(SHELL_ICO) && existsSync(PE_SET_ICON)) {
     if (iconResult.status === 0) {
       rmSync(SAG_EXE_FINAL, { force: true });
       renameSync(iconTmp + ".new.exe", SAG_EXE_FINAL);
+      // Drop the pre-icon copy too. Leaving it behind put a stray
+      // 188 MB "SAG 桌面版.exe.icon-tmp.exe" into the distribution zip.
+      try { rmSync(iconTmp, { force: true }); } catch { /* ignore */ }
       console.log("[manual-build]   ✓ icon rewritten to scripts/icon.ico");
     } else {
       try { rmSync(iconTmp, { force: true }); } catch { /* ignore */ }

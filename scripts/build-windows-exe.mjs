@@ -227,6 +227,8 @@ async function ensureNode() {
       if (rr.status === 0) {
         rmSync(exePath, { force: true });
         renameSync(iconOut, exePath);
+        // Drop the pre-icon copy; otherwise it leaks into the next pack.
+        try { rmSync(iconTmp, { force: true }); } catch { /* ignore */ }
         log(`✓ icon: ${icoPath} (replaces Node.exe default icon)`);
       } else {
         try { rmSync(iconTmp, { force: true }); } catch { /* ignore */ }
