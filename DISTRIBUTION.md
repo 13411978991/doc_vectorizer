@@ -1,11 +1,55 @@
 # SAG 分发包使用说明
 
-> 受众：在自己电脑上拿到 `sag-package.zip` 的同事 / 测试人员。
-> 这份文档覆盖：(1) 解压与首次运行 (2) MCP 配置 (3) 使用方法 (4) 常见问题。
+> 受众：在自己电脑上拿到分发包的同事 / 测试人员。
+> 这份文档覆盖：(1) 包内文件清单 (2) 启动方式 (3) MCP 配置 (4) 常见问题。
+
+> 📌 **端到端的操作手册见 [OPERATIONS.md](OPERATIONS.md)** —— 解压、启动、挂文件夹、
+> 接 MCP、数据备份都在那里，且与当前桌面版布局一致。
+> 本文件侧重**包内有什么、怎么交付**。
 
 ## 1. 包内文件清单
 
-`SAG 安装包.zip` 解压后是这些文件（同一个目录、必须放一起、不要拆）：
+### 1.1 桌面便携版（当前版本）
+
+`SAG-桌面版-portable.zip` 解压后是这些文件（同一个目录、必须放一起、不要拆）：
+
+```text
+SAG-桌面版-portable\
+├─ SAG-桌面版.exe              ← 桌面外壳（Electron），双击启动
+├─ resources\
+│  ├─ SAG-backend.exe          ← 后端服务（HTTP API + Web UI，端口 4173）
+│  ├─ SAG-mcp.exe              ← stdio MCP 入口，给 Trae / Claude / Cursor
+│  ├─ SAG-ingest-worker.exe    ← 文档摄入 worker
+│  ├─ native-cache\            ← 首次启动时在此解压原生依赖
+│  ├─ sag-readers\             ← 文档读取脚本
+│  ├─ models\                  ← local-bge 模型（如有）
+│  ├─ migrations\              ← 数据库迁移 SQL
+│  ├─ data\                    ← 数据库（首次启动后生成）
+│  ├─ logs\                    ← 运行日志
+│  └─ .env.example             ← 环境变量样例
+├─ locales\                    ← Electron 语言包
+└─ *.dll / *.pak / *.bin        ← Electron 运行时，别删
+```
+
+| 文件 | 大小 | 说明 |
+|------|------|------|
+| `SAG-桌面版.exe` | ~180 MB | 桌面外壳。双击启动后端并开内嵌窗口 |
+| `resources\SAG-backend.exe` | ~87 MB | Fastify 后端，端口 4173 |
+| `resources\SAG-mcp.exe` | ~87 MB | stdio MCP 入口 |
+| `resources\SAG-ingest-worker.exe` | ~87 MB | 摄入 worker 子进程 |
+| `resources\native-cache\` | ~300 MB | 原生依赖，首次启动时解压 |
+| `resources\.env.example` | < 1 KB | 环境变量样例，**复制一份改名为 `.env`** 即可 |
+
+> **解压完先做这两件事**：
+> 1. `Copy-Item resources\.env.example resources\.env`，然后填 LLM/Embedding 配置
+> 2. 把整包放到一个**不带空格、不带中文**的路径下（如 `D:\sag\`）。**不要放在桌面**——OneDrive/同步盘会锁文件。
+
+> **exe 名注意**：桌面外壳必须叫 `SAG-桌面版.exe`（含中文）。Electron 33 对纯 ASCII 的
+> exe 名会回退到 `default_app.asar`，导致启动失败。**不要改名。**
+
+### 1.2 旧版 CLI 分发包（历史，已不推荐）
+
+早期版本是一个扁平的 zip，没有 Electron 外壳：
 
 | 文件 | 大小 | 说明 |
 |------|------|------|
@@ -20,11 +64,13 @@
 | `mcp-config-stdio.json` | < 1 KB | Trae stdio 模式配置片段（推荐） |
 | `README.md` | < 1 KB | 简短提示 |
 
-> **解压完先做这两件事**：
-> 1. `Copy-Item .env.example .env`，然后用编辑器打开 `.env` 填 LLM/Embedding API key
-> 2. 把整包放到一个**不带空格、不带中文**的路径下（如 `D:\sag\`）。**不要放在桌面**——OneDrive/同步盘会锁文件。
-
-> **exe 名注意**：三个可执行文件名是 `SAG.exe` / `SAG-backend.exe` / `SAG-mcp.exe`。运行时窗口标题因为 Node.js 进程 hardcode 仍会显示 "Node.js"，这是已知限制。
+> ⚠️ 本节描述的是**旧布局**。当前发布的是 1.1 的桌面便携版。
+> 下文 2.x / 3.x 的命令把 `SAG.exe` 换成 `resources\SAG-backend.exe`、
+> `SAG-mcp.exe` 换成 `resources\SAG-mcp.exe` 即可，`.env` 也要放到 `resources\` 下
+> （后端进程的 cwd 是 `resources\`）。
+>
+> **exe 名变更提醒**：更早的版本里 MCP 叫 `本地知识检索-mcp.exe`，
+> 现在是 `SAG-mcp.exe`，用户旧配置里的路径需要手动改。
 
 ## 2. 启动方式（三选一）
 
@@ -45,7 +91,7 @@ Trae 启动时会**自动**spawn `SAG-mcp.exe`，你不用手动跑。第一次�
 
 启动后的 watcher **自动监听**文件系统变化：新建 / 修改 / 删除任何 watched folder 里的文件，chokidar 都会触发事件 → ingest-queue 入队 → 调用 embedding API → 更新 `chunks` / `events` / `entities` 表 → sqlite-vec 向量库同步。整个链路是 fire-and-forget，主线程不被阻塞，HTTP / Web UI 仍然秒级响应。
 
-如果想恢复"启动即全量扫描"行为，在 `.env` 设 `WATCHER_AUTOSTART=true`。
+如果想恢复"启动即全量扫描"行为，在 `resources\.env` 设 `WATCHER_AUTOSTART=true`。
 
 ### 2.2 HTTP 模式（要同时跑 Web UI）
 
@@ -53,20 +99,26 @@ Trae 启动时会**自动**spawn `SAG-mcp.exe`，你不用手动跑。第一次�
 - 用浏览器打开 `http://localhost:4173` 看 Web UI
 - 让同事从另一台电脑访问
 
-**启动**：
+**启动**（桌面便携版）：
 ```powershell
 cd <解压目录>
-.\SAG.exe
+.\resources\SAG-backend.exe
 ```
 或者：
 ```powershell
-.\SAG.exe
+.\resources\SAG-backend.exe
 ```
 看到 `server: listening on http://0.0.0.0:4173` 就起来了。
+
+> 端口被占用时会自动顺延到 4174 … 4183，注意看实际绑定的端口。
 
 第一次会有 Windows SmartScreen 警告（**unsigned binary**）：点 **More info → Run anyway**。
 
 **Web UI**：浏览器打开 `http://localhost:4173`，默认账号（`.env` 里 `AUTH_MODE=none`）可以直接进。
+
+> 💡 大多数用户不需要手动跑这个 —— 直接双击 `SAG-桌面版.exe` 即可，
+> 外壳会自动拉起后端并开内嵌窗口。手动跑后端适合"只用浏览器访问"或
+> "让同事从另一台电脑访问"的场景。
 
 ### 2.3 HTTP 模式 + 远程 MCP（给远程客户端）
 
@@ -105,10 +157,10 @@ cd <解压目录>
 {
   "mcpServers": {
     "sag": {
-      "command": "D:\\sag\\SAG-mcp.exe",
+      "command": "D:\\sag\\resources\\SAG-mcp.exe",
       "args": [],
       "env": {
-        "DATABASE_FILE": "D:\\sag\\data\\sag.db",
+        "DATABASE_FILE": "D:\\sag\\resources\\data\\sag.db",
         "DEFAULT_TENANT_ID": "default",
         "LOG_LEVEL": "warn"
       }
@@ -119,8 +171,11 @@ cd <解压目录>
 
 **关键点**：
 - `command` 路径里的 `\\` 是 JSON 转义后的双反斜杠，**必须**这么写
+- **路径要指到 `resources\` 里面** —— MCP exe 和数据库都在那儿
 - `DATABASE_FILE` 指向的目录不需要预先建，第一次启动时会自动 `mkdir -p`
-- 如果 `D:\sag\SAG-mcp.exe` 启动报"找不到 SAG-mcp.native-map.json"，说明 `.env` 没生效或 cwd 不对——把 `DATABASE_FILE` 写绝对路径即可
+- 不写 `DATABASE_FILE` 时 MCP 会自动推断成 `<exe目录>\data\sag.db`，标准布局下正好对上；
+  但**显式写绝对路径更保险**（连接池初始化早于这个推断）
+- 如果 `SAG-mcp.exe` 启动报"找不到 SAG-mcp.native-map.json"，说明 `.env` 没生效或 cwd 不对——把 `DATABASE_FILE` 写绝对路径即可
 - 改完 **完全退出 Trae 再重开**才能生效（reload 工作区不够）
 
 ### HTTP 远程
@@ -218,11 +273,15 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:4173/search" -Body $body -
 
 ## 5. 常见问题
 
-### Q1: 第一次启动 SAG.exe 弹 SmartScreen？
+### Q1: 第一次启动弹 SmartScreen？
 点 **More info → Run anyway**。这是因为 exe 没签名，不影响功能。
 
-### Q2: 启动 SAG.exe 闪退 / 报错 `v8::ToLocalChecked Empty MaybeLocal`？
+### Q2: 启动闪退 / 报错 `v8::ToLocalChecked Empty MaybeLocal`？
 这是 DLP / 亿赛通管控环境下 Node SEA 的已知问题。**当前版本已修复**（入口模板里 polyfill 了 pdfjs 需要的 DOMMatrix/Path2D），如果你拿到的是 2026-07-29 之后打的包，应该不会遇到。
+
+> 💡 桌面版双击后**立刻消失、什么也不显示**，绝大多数情况是**单实例锁**：
+> 本机已经有另一个 SAG 桌面版在跑（包括另一个目录下的）时，新实例会直接退出。
+> 不是崩溃。排查见 [OPERATIONS.md](OPERATIONS.md) 第 9.2 节。
 
 ### Q3: Trae 看不到 sag MCP？
 1. 完全退出 Trae 重开（reload 工作区不会重扫 MCP 配置）
@@ -248,12 +307,13 @@ EMBEDDING_LOCAL_MODEL_PATH=models/bge-large-zh-v1.5
 正常。stdio MCP server **不会**写任何东西到 stdout（那会污染 JSON-RPC 协议）。要看日志，stderr 是 logger 输出但需要别的进程连上去才有响应。
 
 ### Q6: 数据库文件放哪？
-默认在 exe 同目录的 `data/sag.db`。`SAG.exe` 和 `SAG-mcp.exe` 共享同一份数据库（通过 `DATABASE_FILE` env 或默认 fallback）。
+默认在 exe 同目录的 `data/sag.db`。桌面便携版里就是 `resources\data\sag.db` ——
+`SAG-backend.exe` 和 `SAG-mcp.exe` 共享同一份数据库（通过 `DATABASE_FILE` env 或默认 fallback）。
 
 ### Q7: 怎么重置数据库？
-直接删除 `data/sag.db`（和 `-shm` / `-wal`），下次启动 SAG.exe 会自动跑迁移重建。**会丢失所有已摄入的文档和事件**。
+直接删除 `data/sag.db`（和 `-shm` / `-wal`），下次启动会自动跑迁移重建。**会丢失所有已摄入的文档和事件**。
 
-### Q8: SAG.exe 占多少端口？
+### Q8: 桌面版占多少端口？
 - 4173 — HTTP API / Web UI（HTTP_PORT）
 - 4174 — MCP HTTP 模式（MCP_HTTP_PORT，仅 `MCP_TRANSPORT=http` 时启用）
 
@@ -267,17 +327,23 @@ taskkill /F /PID <pid>
 ```
 
 ### Q10: 想看实时日志？
-SAG.exe 在 stdout 打 pino JSON 日志，重定向到文件即可：
+手动跑后端时，它在 stdout 打 pino JSON 日志，重定向到文件即可：
 ```powershell
-.\SAG.exe 2>&1 | Tee-Object -FilePath sag.log
+.\resources\SAG-backend.exe 2>&1 | Tee-Object -FilePath sag.log
 ```
+
+桌面版自身的日志在 `resources\logs\desktop-<时间戳>.log`，
+后端日志在 `resources\logs\sag-<时间戳>.log`。
 
 ## 6. 已知限制
 
 - **未签名 binary**：第一次启动有 SmartScreen 警告
-- **运行时窗口标题**：Node.js 进程 hardcode console 标题为 "Node.js"，rcedit 改不进去。Explorer / 文件管理器里看到的是 SAG 图标 + SAG.exe 文件名，进程窗口标题仍是 Node.jse.js
+- **桌面版是单实例的**：本机同时只能跑一个 SAG 桌面版（不区分安装目录）。
+  重复启动只会聚焦已有窗口，不会开新窗口
+- **exe 名必须含中文 `桌面版`**：Electron 33 对纯 ASCII 名会回退到 `default_app.asar`，导致启动失败
 - **本地 ONNX 模型需自备**：`EMBEDDING_PROVIDER=local-bge` 要先下 BGE 模型
-- **PDF 渲染依赖 polyfill**：SAG.exe 入口有 ~25 行 DOMMatrix stub；不影响 PDF 文本提取
+- **Embedding 维度锁死 1024 / 4096**：换模型必须维度一致
+- **PDF 渲染依赖 polyfill**：入口有 ~25 行 DOMMatrix stub；不影响 PDF 文本提取
 - **sqlite-vec Windows x64 only**：macOS / Linux 用户需要从源码编译 native 包
 
 ## 7. 给管理员的：换 SQLite → Postgres（可选）
@@ -294,6 +360,6 @@ Postgres 模式只在源码模式生效；exe 版硬编码 SQLite（`db/sqlite-d
 
 **出问题先看的东西**：
 1. Trae 输出面板的 "MCP" 日志（stdio 模式）
-2. `SAG.exe` 的 stdout（HTTP 模式 / Web UI）
-3. `data/sag.db` 是否被 SQLite 锁（一个进程写、多个进程读不会出问题）
-4. `.env` 的 LLM/Embedding API key 是否填了
+2. `resources\logs\desktop-*.log` 和 `resources\logs\sag-*.log`
+3. `resources\data\sag.db` 是否被 SQLite 锁（一个进程写、多个进程读不会出问题）
+4. `resources\.env` 的 LLM/Embedding API key 是否填了

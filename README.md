@@ -263,6 +263,20 @@ npm run mcp           # 跑 MCP stdio server
 
 ---
 
+## 文档索引
+
+| 文档 | 面向 | 内容 |
+|---|---|---|
+| [OPERATIONS.md](OPERATIONS.md) | 桌面版使用者 | **拿到分发包后怎么用**：解压、启动、挂文件夹、接 MCP、备份、排障 |
+| [DISTRIBUTION.md](DISTRIBUTION.md) | 交付/分发负责人 | 包内文件清单、交付形态 |
+| [BUILD_ON_WINDOWS.md](BUILD_ON_WINDOWS.md) | 开发/构建者 | Windows 从源码编译 |
+| [REBUILD.md](REBUILD.md) | 开发/构建者 | 重建流程 |
+| [AI_BUILD_SOP.md](AI_BUILD_SOP.md) | 开发/构建者 | AI 协助构建的标准流程 |
+| [docs/MCP.md](docs/MCP.md) | 集成方 | MCP 详解（含 HTTP 远程模式） |
+| [docs/watched-folders/USER_GUIDE.md](docs/watched-folders/USER_GUIDE.md) | 使用者 | 文件夹挂载指南 |
+
+---
+
 ## 与上游的差异
 
 本项目 fork 自 [Zleap-AI/SAG](https://github.com/Zleap-AI/SAG)。核心差异（方便 cherry-pick / diff）：
