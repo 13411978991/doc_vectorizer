@@ -6,6 +6,7 @@ import { config } from "../config/env.js";
 import { logger } from "../observability/logger.js";
 import { DEFAULT_SUPPORTED_EXTENSIONS, type WatchedFolderRecord } from "./types.js";
 import { shouldIncludeFile } from "./filetype-filter.js";
+import { isExcludedDirName } from "./scan-exclusions.js";
 import { getRuntimePerformanceSettings } from "../services/performance-settings-service.js";
 import { SCAN_CONCURRENCY, DIR_CONCURRENCY } from "../config/tuning-constants.js";
 
@@ -91,12 +92,45 @@ export async function getInode(filePath: string): Promise<number> {
  * directories, that linearised every readdir round-trip and made the scan
  * phase look "stuck". We now process directory nodes in parallel, bounded
  * to `DIR_CONCURRENCY` (8) so we don't fan out the disk scheduler on HDD.
+ *
+ * Filtering (2026-10-23)
+ * ----------------------
+ * The whitelist is applied **here, during traversal**, not afterwards.
+ * Previously `enumerateFiles` collected every file it saw and the
+ * extension filter ran later in `scanFolder`. On a drive-root watch
+ * (`E:\` = 752,470 files, of which only ~7k matched the Office
+ * whitelist) that meant 745k pointless `stat` calls and SHA-1 reads
+ * before a single document could be ingested — the scan never
+ * completed.
+ *
+ * Two things are now skipped during traversal:
+ *
+ *   1. **Excluded directories** — system dirs (`$RECYCLE.BIN`,
+ *      `System Volume Information`), dependency trees (`node_modules`,
+ *      `.git`, `pnpm-store`), backup leftovers. See
+ *      `scan-exclusions.ts`.
+ *   2. **Files that fail the extension whitelist** — never collected
+ *      at all, so they cost nothing.
+ *
+ * IMPORTANT — deleted-file accounting
+ * -----------------------------------
+ * The old code added *every* on-disk file to `seenOnDisk`, including
+ * ones the whitelist rejected, so that a filtered file never looked
+ * "deleted" to the manifest. With the filter pushed down we no
+ * longer see those files during traversal, which would make the
+ * manifest think every previously-indexed non-whitelisted file had
+ * been deleted.
+ *
+ * To preserve that behaviour, `scanFolder` re-checks the manifest's
+ * known paths against the filesystem for any path missing from
+ * `seenOnDisk`. Files that are not in the manifest and not in the
+ * whitelist are simply never known to the system, which is the
+ * correct outcome.
  */
-// DIR_CONCURRENCY imported from tuning-constants.js
-
 async function enumerateFiles(
   root: string,
-  recursive: boolean
+  recursive: boolean,
+  includeFile?: (relPath: string) => boolean
 ): Promise<{ absPath: string; relPath: string }[]> {
   const out: { absPath: string; relPath: string }[] = [];
   // Bounded queue: processDir keeps draining until there are no more
@@ -105,6 +139,7 @@ async function enumerateFiles(
   const queue: string[] = [root];
   const inFlight: Promise<void>[] = [];
   const seen = new Set<string>();
+  let skippedDirs = 0;
 
   const processDir = async (dir: string): Promise<void> => {
     if (seen.has(dir)) return;
@@ -123,14 +158,23 @@ async function enumerateFiles(
       if (entry.isSymbolicLink()) {
         continue; // don't follow symlinks — cycle risk
       } else if (entry.isDirectory()) {
+        // Skip excluded directories BEFORE queueing them, so the
+        // scanner never descends into them at all.
+        if (isExcludedDirName(entry.name)) {
+          skippedDirs++;
+          continue;
+        }
         if (recursive) {
           queue.push(abs);
         }
       } else if (entry.isFile()) {
-        out.push({
-          absPath: abs,
-          relPath: path.relative(root, abs).split(path.sep).join("/")
-        });
+        // Apply the whitelist here. Without this, a drive-root watch
+        // pays a stat + SHA-1 for every file on the volume.
+        const relPath = path.relative(root, abs).split(path.sep).join("/");
+        if (includeFile && !includeFile(relPath)) {
+          continue;
+        }
+        out.push({ absPath: abs, relPath });
       }
     }
   };
@@ -156,6 +200,13 @@ async function enumerateFiles(
     }
   }
 
+  if (skippedDirs > 0) {
+    logger.info(
+      { root, skippedDirs, collected: out.length },
+      "watcher: excluded directories skipped during scan"
+    );
+  }
+
   return out;
 }
 
@@ -173,18 +224,23 @@ export async function scanFolder(
   existing: ExistingManifestEntry[] = []
 ): Promise<ScanResult> {
   const root = folder.path;
-  const onDisk = await enumerateFiles(root, folder.recursive);
 
   // Apply the same default-whitelist filter the ingest pipeline uses,
   // so we don't SHA-1 every game save and emoji file under a watched
-  // folder that didn't set its own whitelist. Skipped files still
-  // appear in `seenOnDisk` (so they don't get reported as deleted) but
-  // they don't enter the `added`/`updated` buckets and don't waste a
-  // hash read.
+  // folder that didn't set its own whitelist.
+  //
+  // This is computed BEFORE the traversal and handed to
+  // `enumerateFiles` so non-matching files are never collected in the
+  // first place (2026-10-23). On a drive-root watch this is the
+  // difference between 752k files and ~7k.
   const userFilter = folder.filetypeFilter ?? {};
   const effectiveFilter = userFilter.whitelist
     ? userFilter
     : { ...userFilter, whitelist: DEFAULT_SUPPORTED_EXTENSIONS };
+
+  const onDisk = await enumerateFiles(root, folder.recursive, (relPath) =>
+    shouldIncludeFile(relPath, effectiveFilter).include
+  );
 
   const existingByPath = new Map<string, ExistingManifestEntry>();
   for (const entry of existing) {
@@ -299,13 +355,66 @@ export async function scanFolder(
   }
 
   // Anything that was in the manifest but not on disk has been deleted.
+  //
+  // Since the whitelist filter is now applied during traversal, a
+  // manifest row whose file was never collected would be wrongly
+  // reported as deleted — and a deletion hard-deletes the ingested
+  // document. Three guards prevent that:
+  //
+  //   1. If the row's path no longer passes the whitelist, it is
+  //      still on disk but simply out of scope → NOT deleted. We
+  //      leave the manifest row alone; the user can prune it
+  //      explicitly if they want.
+  //   2. If the row's path sits inside an excluded directory
+  //      (`node_modules`, `.git`, `$RECYCLE.BIN`, …) the scanner
+  //      never descends there, so it cannot know whether the file
+  //      still exists → NOT deleted. This is the same reasoning as
+  //      (1): out of scope ≠ gone.
+  //   3. Otherwise the path passes the whitelist and is in a scanned
+  //      directory but wasn't collected → genuinely gone → deleted.
+  //
+  // This keeps the "no longer in scope" cases non-destructive, matching
+  // the pre-pushdown behaviour where filtered files were added to
+  // `seenOnDisk`.
   for (const entry of existing) {
-    if (!seenOnDisk.has(entry.relPath)) {
-      result.deleted.push(entry.relPath);
+    if (seenOnDisk.has(entry.relPath)) {
+      continue;
     }
+    const stillInScope = shouldIncludeFile(entry.relPath, effectiveFilter).include;
+    if (!stillInScope) {
+      // Out of scope now (whitelist changed) but not necessarily
+      // gone from disk. Leave it alone — deleting it would destroy
+      // a document the user may still want.
+      continue;
+    }
+    if (relPathHasExcludedDir(entry.relPath)) {
+      // Lives under a directory the scanner skips. We never looked,
+      // so we must not claim it was deleted.
+      continue;
+    }
+    result.deleted.push(entry.relPath);
   }
 
   return result;
+}
+
+/**
+ * True when any path segment of a manifest-relative path names an
+ * excluded directory.
+ *
+ * Used by the deleted-file accounting: a row under an excluded
+ * directory was never visited by the scanner, so its absence from
+ * the scan result says nothing about whether the file still exists.
+ */
+function relPathHasExcludedDir(relPath: string): boolean {
+  const segments = relPath.split(/[\\/]/).filter(Boolean);
+  // The last segment is the file name itself, not a directory.
+  for (let i = 0; i < segments.length - 1; i++) {
+    if (isExcludedDirName(segments[i])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function hasChanged(prev: ExistingManifestEntry, next: FileEntry): boolean {

@@ -68,21 +68,21 @@ describe("scanFolder", () => {
   });
 
   it("reports all files as added on first scan", async () => {
-    await writeFile(join(dir, "a.md"), "alpha");
-    await writeFile(join(dir, "b.md"), "beta");
+    await writeFile(join(dir, "a.docx"), "alpha");
+    await writeFile(join(dir, "b.docx"), "beta");
     const result = await scanFolder(makeFolder(dir), []);
-    expect(result.added.map((e) => e.relPath).sort()).toEqual(["a.md", "b.md"]);
+    expect(result.added.map((e) => e.relPath).sort()).toEqual(["a.docx", "b.docx"]);
     expect(result.updated).toHaveLength(0);
     expect(result.deleted).toHaveLength(0);
   });
 
   it("detects new files as added and skips unchanged files", async () => {
-    const aPath = join(dir, "a.md");
+    const aPath = join(dir, "a.docx");
     await writeFile(aPath, "alpha");
     const first = await scanFolder(makeFolder(dir), []);
     expect(first.added).toHaveLength(1);
 
-    await writeFile(join(dir, "b.md"), "beta");
+    await writeFile(join(dir, "b.docx"), "beta");
     const second = await scanFolder(makeFolder(dir), first.added.map((e) => ({
       relPath: e.relPath,
       mtimeMs: e.mtimeMs,
@@ -90,18 +90,18 @@ describe("scanFolder", () => {
       sizeBytes: e.sizeBytes,
       sha1: e.sha1
     })));
-    expect(second.added.map((e) => e.relPath)).toEqual(["b.md"]);
+    expect(second.added.map((e) => e.relPath)).toEqual(["b.docx"]);
     expect(second.updated).toHaveLength(0);
   });
 
   it("detects deleted files", async () => {
-    await writeFile(join(dir, "a.md"), "alpha");
-    await writeFile(join(dir, "b.md"), "beta");
+    await writeFile(join(dir, "a.docx"), "alpha");
+    await writeFile(join(dir, "b.docx"), "beta");
     const first = await scanFolder(makeFolder(dir), []);
-    expect(first.added.map((e) => e.relPath).sort()).toEqual(["a.md", "b.md"]);
+    expect(first.added.map((e) => e.relPath).sort()).toEqual(["a.docx", "b.docx"]);
 
     const { unlink } = await import("node:fs/promises");
-    await unlink(join(dir, "a.md"));
+    await unlink(join(dir, "a.docx"));
     const second = await scanFolder(makeFolder(dir), first.added.map((e) => ({
       relPath: e.relPath,
       mtimeMs: e.mtimeMs,
@@ -109,11 +109,11 @@ describe("scanFolder", () => {
       sizeBytes: e.sizeBytes,
       sha1: e.sha1
     })));
-    expect(second.deleted).toEqual(["a.md"]);
+    expect(second.deleted).toEqual(["a.docx"]);
   });
 
   it("detects changes when mtime differs", async () => {
-    const aPath = join(dir, "a.md");
+    const aPath = join(dir, "a.docx");
     await writeFile(aPath, "alpha");
     const first = await scanFolder(makeFolder(dir), []);
 
@@ -127,13 +127,13 @@ describe("scanFolder", () => {
       sizeBytes: e.sizeBytes,
       sha1: e.sha1
     })));
-    expect(second.updated.map((e) => e.relPath)).toEqual(["a.md"]);
+    expect(second.updated.map((e) => e.relPath)).toEqual(["a.docx"]);
     expect(second.added).toHaveLength(0);
     expect(second.deleted).toHaveLength(0);
   });
 
   it("detects changes when mtime/inode/size are identical but sha1 differs", async () => {
-    const aPath = join(dir, "a.md");
+    const aPath = join(dir, "a.docx");
     await writeFile(aPath, "alpha");
     const first = await scanFolder(makeFolder(dir), []);
     const prev = first.added[0];
@@ -149,11 +149,11 @@ describe("scanFolder", () => {
       sizeBytes: stat.size, // pretend size unchanged (length happens to be the same)
       sha1: prev.sha1 // stored sha1 from the OLD content
     }]);
-    expect(second.updated.map((e) => e.relPath)).toEqual(["a.md"]);
+    expect(second.updated.map((e) => e.relPath)).toEqual(["a.docx"]);
   });
 
   it("does not flag changes when sha1 matches even with no other metadata", async () => {
-    const aPath = join(dir, "a.md");
+    const aPath = join(dir, "a.docx");
     await writeFile(aPath, "alpha");
     const first = await scanFolder(makeFolder(dir), []);
     const prev = first.added[0];
@@ -171,32 +171,112 @@ describe("scanFolder", () => {
   it("recurses when recursive=true", async () => {
     const { mkdir } = await import("node:fs/promises");
     await mkdir(join(dir, "sub"));
-    await writeFile(join(dir, "top.md"), "x");
-    await writeFile(join(dir, "sub", "nested.md"), "y");
+    await writeFile(join(dir, "top.docx"), "x");
+    await writeFile(join(dir, "sub", "nested.docx"), "y");
 
     const result = await scanFolder(makeFolder(dir, { recursive: true }), []);
-    expect(result.added.map((e) => e.relPath).sort()).toEqual(["sub/nested.md", "top.md"]);
+    expect(result.added.map((e) => e.relPath).sort()).toEqual(["sub/nested.docx", "top.docx"]);
   });
 
   it("does not recurse when recursive=false", async () => {
     const { mkdir } = await import("node:fs/promises");
     await mkdir(join(dir, "sub"));
-    await writeFile(join(dir, "top.md"), "x");
-    await writeFile(join(dir, "sub", "nested.md"), "y");
+    await writeFile(join(dir, "top.docx"), "x");
+    await writeFile(join(dir, "sub", "nested.docx"), "y");
 
     const result = await scanFolder(makeFolder(dir, { recursive: false }), []);
-    expect(result.added.map((e) => e.relPath)).toEqual(["top.md"]);
+    expect(result.added.map((e) => e.relPath)).toEqual(["top.docx"]);
   });
 
   it("survives unreadable directories gracefully", async () => {
-    await writeFile(join(dir, "top.md"), "x");
+    await writeFile(join(dir, "top.docx"), "x");
     const { mkdir } = await import("node:fs/promises");
     const unreadable = join(dir, "no-perm");
     await mkdir(unreadable);
-    await writeFile(join(unreadable, "ghost.md"), "y");
+    await writeFile(join(unreadable, "ghost.docx"), "y");
 
     // Run as root in CI? Fall back to making sure we don't crash by removing the dir.
     const result = await scanFolder(makeFolder(dir), []);
-    expect(result.added.map((e) => e.relPath)).toContain("top.md");
+    expect(result.added.map((e) => e.relPath)).toContain("top.docx");
+  });
+
+  // ── Whitelist push-down + directory exclusions (2026-10-23) ──────
+  //
+  // These cover the drive-root-watch fix. Before the push-down, the
+  // scanner collected every file on the volume and filtered afterwards,
+  // which made a whole-drive watch (E:\ = 752k files) take hours and
+  // never finish.
+
+  it("skips files whose extension is not whitelisted", async () => {
+    await writeFile(join(dir, "keep.docx"), "x");
+    await writeFile(join(dir, "ignore.md"), "y");
+    await writeFile(join(dir, "ignore.png"), "z");
+    await writeFile(join(dir, "ignore"), "w");
+
+    const result = await scanFolder(makeFolder(dir), []);
+    expect(result.added.map((e) => e.relPath)).toEqual(["keep.docx"]);
+  });
+
+  it("honours an explicit whitelist that differs from the default", async () => {
+    await writeFile(join(dir, "keep.md"), "x");
+    await writeFile(join(dir, "drop.docx"), "y");
+
+    const result = await scanFolder(
+      makeFolder(dir, { filetypeFilter: { whitelist: [".md"] } }),
+      []
+    );
+    expect(result.added.map((e) => e.relPath)).toEqual(["keep.md"]);
+  });
+
+  it("does not descend into excluded directories", async () => {
+    const { mkdir } = await import("node:fs/promises");
+    await writeFile(join(dir, "keep.docx"), "x");
+    for (const excluded of ["node_modules", ".git", "$RECYCLE.BIN", "System Volume Information"]) {
+      await mkdir(join(dir, excluded));
+      await writeFile(join(dir, excluded, "buried.docx"), "y");
+    }
+
+    const result = await scanFolder(makeFolder(dir), []);
+    expect(result.added.map((e) => e.relPath)).toEqual(["keep.docx"]);
+  });
+
+  it("does not report an excluded-directory file as deleted", async () => {
+    // A file that was indexed before the exclusion rules applied must
+    // not be hard-deleted just because its directory is now skipped.
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(join(dir, "node_modules"));
+    await writeFile(join(dir, "node_modules", "pkg.docx"), "x");
+
+    const result = await scanFolder(makeFolder(dir), [
+      {
+        relPath: "node_modules/pkg.docx",
+        mtimeMs: 1,
+        inode: 1,
+        sizeBytes: 1,
+        sha1: "deadbeef"
+      }
+    ]);
+    expect(result.deleted).toEqual([]);
+  });
+
+  it("still reports a genuinely deleted whitelisted file", async () => {
+    await writeFile(join(dir, "a.docx"), "alpha");
+    const first = await scanFolder(makeFolder(dir), []);
+    expect(first.added.map((e) => e.relPath)).toEqual(["a.docx"]);
+
+    const { unlink } = await import("node:fs/promises");
+    await unlink(join(dir, "a.docx"));
+
+    const second = await scanFolder(
+      makeFolder(dir),
+      first.added.map((e) => ({
+        relPath: e.relPath,
+        mtimeMs: e.mtimeMs,
+        inode: e.inode,
+        sizeBytes: e.sizeBytes,
+        sha1: e.sha1
+      }))
+    );
+    expect(second.deleted).toEqual(["a.docx"]);
   });
 });

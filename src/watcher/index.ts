@@ -9,6 +9,7 @@ import { syncFolder, syncFolderWith } from "./sync-orchestrator.js";
 import { ingestQueue, type QueueItem } from "./ingest-queue.js";
 import { scanFolder } from "./analyzer.js";
 import { computeSha1, getInode } from "./analyzer.js";
+import { makeChokidarIgnoredPredicate } from "./scan-exclusions.js";
 import { getFolder, getLatestSyncRun, getManifest, resetManifestForRetry, listFailedManifestEntries, purgeDeletedManifests } from "./manifest-store.js";
 import { sweepStartupOrphans } from "./com-decrypt.js";
 import type { WatchedFolderRecord } from "./types.js";
@@ -205,7 +206,14 @@ export class WatcherManager {
       followSymlinks: false,
       depth: folder.recursive ? undefined : 0,
       usePolling: false,
-      awaitWriteFinish: false
+      awaitWriteFinish: false,
+      // Skip excluded directories (system dirs, node_modules, .git, …)
+      // so chokidar doesn't hold a watch handle on every inode of a
+      // whole drive. On an E:\ root the handle count grew by ~11
+      // per second and reached 240k+ before this was added.
+      // The predicate matches on whole path segments, so a user
+      // directory named e.g. "my-node_modules" is not affected.
+      ignored: makeChokidarIgnoredPredicate()
     });
 
     const onEvent = (relPath: string, kind: "added" | "updated" | "deleted") => {

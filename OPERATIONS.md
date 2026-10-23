@@ -154,11 +154,55 @@ server: listening on http://0.0.0.0:4173
 - `.pdf` `.docx` `.xlsx` `.xls` `.csv` `.png` `.jpg` `.jpeg` — 经转换器处理
 - 其他扩展名 — 跳过（会在 manifest 里标记为 skipped）
 
+> **注意**：watcher 默认**不随启动自动全量扫描**。如果希望启动即扫，
+> 在 `resources\.env` 里设 `WATCHER_AUTOSTART=true`。
+
 > 详细的场景配置（Obsidian 库、团队共享盘、项目归档等）、过滤规则优先级、
 > 以及 watcher 的完整行为，见 [docs/watched-folders/USER_GUIDE.md](docs/watched-folders/USER_GUIDE.md)。
 
-> **注意**：watcher 默认**不随启动自动全量扫描**。如果希望启动即扫，
-> 在 `resources\.env` 里设 `WATCHER_AUTOSTART=true`。
+### 4.1 可以挂整个盘根目录
+
+比如 `E:\`。这是支持的，但要知道它会做什么：
+
+**扫描阶段**（实测 E 盘 752,470 个文件 / 97,755 个目录）：
+
+- 只走**白名单里的扩展名**，其他文件**根本不 stat、不哈希** —— 实测只收集
+  6,870 个文件（占 0.9%），内存占用降 99%
+- 自动**跳过 541 个目录**：系统目录（`$RECYCLE.BIN`、`System Volume Information`）、
+  依赖树（`node_modules`、`.git`、`pnpm-store`、`.npm`）、备份残留（`$baksd`、`$LBak`）
+- 整个扫描 **约 40 秒**完成
+
+**摄入阶段**（这才是耗时的大头）：
+
+- 每个 Office 文件要走 COM / Python 转换 + 本地 ONNX embedding
+- 实测约 **3 个文件/分钟**（部分大文件单个要几分钟）
+- 6,864 个文件 ≈ **38 小时**。这是正常速度，不是卡住了 —— 看 `resources/logs/sag-*.log`
+  里 `watcher: file ingested` 一行行在加就说明还在跑
+
+> ⚠️ **挂盘根前先配好 Embedding。** watcher 启动前会做 preflight 检查，
+> 没配 embedding 会直接拒绝启动：
+> `watcher: preflight failed, refusing to start`
+> 在 Web UI「AI Provider」里配 `local-bge`（本地模型，离线）或云端 API。
+
+### 4.2 排除你自己的噪音目录
+
+内置排除列表已经覆盖系统目录和常见依赖树。如果还有自己不想索引的目录
+（比如 `我的备份`、`临时`、`归档`），在 `resources\.env` 里加：
+
+```env
+SAG_WATCHER_EXCLUDE_DIRS=我的备份,临时,归档
+```
+
+逗号分隔，按**整个目录名**匹配（大小写不敏感）。所以 `我的备份` 会排除，
+但 `我的备份2` 不会 —— 不会误伤。
+
+### 4.3 被排除目录里的文件会怎样
+
+已经索引过的文件，如果它所在的目录**后来**被排除规则命中，
+它的 manifest 记录会**保留**，不会被当成"已删除"而连带删掉文档。
+同理，改了白名单之后不再匹配的文件也不会被误删。
+
+（这条是刻意的：扫不到 ≠ 文件没了。误删会连带硬删除已摄入的文档。）
 
 ---
 
@@ -458,6 +502,26 @@ cd D:\sag
 ```
 
 桌面版自身的日志在 `resources\logs\desktop-*.log`。
+
+### 9.8 日志里出现 `watcher: preflight failed, refusing to start`
+
+watcher 启动前会先探测 embedding 能不能用。**没配 embedding 就直接拒绝启动**
+（这是刻意的：避免扫完几千个文件才发现一个都嵌入不了）。
+
+```
+{"probe":{"ok":false,"provider":"api","baseUrl":"(empty)","error":"embedding base URL is not configured"}}
+```
+
+解决：Web UI →「AI Provider」，二选一：
+
+- **本地离线**：Embedding provider 选 `local-bge`，Local model path 填
+  `models/bge-large-zh-v1.5`（包里已自带）
+- **云端 API**：填 Base URL / API key / Model，维度选 `1024`
+
+配好后到「数据源」页点 **重新触发同步**。
+
+> ⚠️ 出现这个错误时，文件夹记录**已经建在数据库里了**，只是 watcher 没起来。
+> 所以不用重新添加文件夹，配好 embedding 后直接重触发同步即可。
 
 ---
 

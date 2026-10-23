@@ -192,6 +192,18 @@ const envSchema = z.object({
   // ingest; N consecutive failures (default 3) means the endpoint is
   // consistently down.
   WATCHER_HEALTHCHECK_FAILURES: z.coerce.number().int().min(1).max(20).default(3),
+  // Extra directory basenames the scanner and chokidar must skip,
+  // comma-separated (e.g. "MyBackup,存档,临时"). This extends the
+  // built-in exclusion list in src/watcher/scan-exclusions.ts, which
+  // already covers system dirs ($RECYCLE.BIN, System Volume
+  // Information), dependency trees (node_modules, .git, pnpm-store)
+  // and common backup leftovers ($baksd, $LBak).
+  //
+  // Matching is on the whole directory name, case-insensitively —
+  // a substring rule would risk silently dropping user data.
+  // Operators who watch a whole drive root use this to exclude their
+  // own noisy directories without a rebuild.
+  SAG_WATCHER_EXCLUDE_DIRS: z.string().default(""),
   MCP_TRANSPORT: z.enum(["stdio", "http"]).default("stdio"),
   MCP_HTTP_PORT: z.coerce.number().int().nonnegative().default(4174),
   MCP_HTTP_PATH: z.string().min(1).default("/mcp"),
