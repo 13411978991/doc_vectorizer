@@ -37,8 +37,17 @@ SAG-桌面版-portable\
 | `resources\SAG-backend.exe`       | ~87 MB  | Fastify 后端，端口 4173           |
 | `resources\SAG-mcp.exe`           | ~87 MB  | stdio MCP 入口                 |
 | `resources\SAG-ingest-worker.exe` | ~87 MB  | 摄入 worker 子进程                |
-| `resources\native-cache\`         | ~300 MB | 原生依赖，首次启动时解压                 |
+| `resources\native-cache\`         | ~600 MB | 原生依赖，**后台解压**，界面秒开 |
 | `resources\.env.example`          | < 1 KB  | 环境变量样例，**复制一份改名为 `.env`** 即可 |
+
+> **首启行为（2026-10-27 起）**：原生依赖在**后台**解压，窗口/接口秒级可用；
+> 本地嵌入模型约 30 秒后就绪、全部依赖约 1–3 分钟解完。
+> 进度看 `resources\native-cache\<12位哈希>\` 下的
+> `.sag-unpack-embedding-ready` / `.sag-unpack-complete` 两个标记文件。
+> 解包期间界面照常可用，只是本地 embedding 的检索/同步会等它就绪。
+>
+> **GPU 运行时已从默认包里剔除**（CUDA / Vulkan 的 llama.cpp 动态库，约 0.6 GB）。
+> 机器上真要跑本地 GGUF 推理时，在构建时设 `SAG_INCLUDE_GPU_PACKAGES=1` 再打包。
 
 > **解压完先做这两件事**：
 > 
