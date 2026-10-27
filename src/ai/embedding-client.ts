@@ -49,6 +49,7 @@ import {
   resolveLocalModelPath as sharedResolveLocalModelPath,
   pickBestOnnxFile as sharedPickBestOnnxFile
 } from "./model-path-resolver.js";
+import { waitForNativeCacheReady } from "./native-cache-ready.js";
 
 interface TransformersShape {
   pipeline: (...args: unknown[]) => Promise<unknown>;
@@ -966,6 +967,15 @@ async function localBgeEmbedding(
   dimensions: number
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
+  // Boot-time race gate: on the first boot after an install the SEA
+  // background unpack may still be copying @xenova/transformers into
+  // the native-cache. BOTH paths below need it (the worker requires it
+  // at spawn; the in-process fallback resolves it lazily). Waiting here
+  // — bounded, and a no-op once the stamp exists — keeps a restart
+  // with a pending orphan-requeue from falling into the in-process
+  // ONNX path and freezing the HTTP server (the "UI stops loading
+  // after a restart" symptom, 2026-10-27).
+  await waitForNativeCacheReady();
   // Prefer the worker thread so ONNX forward passes don't block the
   // main event loop (HTTP server, watcher scan, etc.). If the worker
   // can't be spawned (e.g. during dev where the staged .cjs doesn't

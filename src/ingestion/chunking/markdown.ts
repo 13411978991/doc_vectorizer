@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { decode, encode } from "gpt-tokenizer/encoding/cl100k_base";
+import { encode } from "gpt-tokenizer/encoding/cl100k_base";
 import type { ChunkingMode } from "../../types.js";
 import { estimateTokens, stripMarkdown } from "./text-utils.js";
 import {
@@ -106,21 +106,65 @@ function buildHeadingStrictSections(content: string): SectionDraft[] {
 function buildTokenWindowSections(content: string, options: ChunkMarkdownOptions): SectionDraft[] {
   const maxTokens = normalizeTokenCount(options.maxTokens ?? 512, 64, 8192);
   const overlapTokens = normalizeTokenCount(options.overlapTokens ?? 100, 0, maxTokens - 1);
-  const tokenIds = encode(content);
-  if (tokenIds.length === 0) {
+  // Tokenize the WHOLE document up front? No — that is exactly the
+  // main-thread stall we removed from estimateTokens(). `encode()` on a
+  // 100 MB document keeps gpt-tokenizer's BPE merge cache growing for
+  // minutes and pins the event loop, so /health stops answering and
+  // the UI appears frozen.
+  //
+  // Instead we walk the text in CHARACTER windows sized from the token
+  // budget, and only run the exact tokenizer on the small per-window
+  // text. The window is then trimmed to the real token limit, which is
+  // cheap because the window is bounded.
+  //
+  // The character window uses the same conservative chars-per-token
+  // ratio as text-utils.ts (1.5), so the initial window slightly
+  // OVER-estimates the token count — the exact trim below then brings
+  // it back under the limit.
+  const CHARS_PER_TOKEN = 1.5;
+  const windowChars = Math.max(1, Math.floor(maxTokens * CHARS_PER_TOKEN));
+  const overlapChars = Math.max(0, Math.floor(overlapTokens * CHARS_PER_TOKEN));
+  const stride = Math.max(1, windowChars - overlapChars);
+
+  const sections: SectionDraft[] = [];
+  if (content.length === 0) {
     return [];
   }
-  const stride = Math.max(1, maxTokens - overlapTokens);
-  const sections: SectionDraft[] = [];
-  for (let start = 0; start < tokenIds.length; start += stride) {
-    let end = Math.min(start + maxTokens, tokenIds.length);
-    let rawContent = decode(tokenIds.slice(start, end)).trim();
-    while (estimateTokens(rawContent) > maxTokens && end > start + 1) {
-      end -= 1;
-      rawContent = decode(tokenIds.slice(start, end)).trim();
+
+  for (let start = 0; start < content.length; start += stride) {
+    let end = Math.min(start + windowChars, content.length);
+    let rawContent = content.slice(start, end).trim();
+    // Trim to the real token limit.
+    //
+    // The window is bounded (≤ ~12k chars), so estimateTokens() stays
+    // on the exact fast path. But we must NOT scan one character at a
+    // time: the original loop re-tokenized the whole window on every
+    // single-character decrement, so trimming a 468-token CJK window
+    // down to 512 meant ~30 full tokenizer passes. Over 1,762 windows
+    // that was 50,000 encode() calls — 30 s of main-thread time on a
+    // 1 MB document.
+    //
+    // A binary search over the cut point does it in log2(window) ≈ 14
+    // passes instead.
+    if (rawContent.length > 0 && estimateTokens(rawContent) > maxTokens) {
+      let lo = start + 1;
+      let hi = end;
+      let best = start;
+      while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const candidate = content.slice(start, mid).trim();
+        if (candidate.length > 0 && estimateTokens(candidate) <= maxTokens) {
+          best = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      end = best;
+      rawContent = content.slice(start, end).trim();
     }
     if (!rawContent) {
-      if (end >= tokenIds.length) {
+      if (end >= content.length) {
         break;
       }
       continue;
@@ -130,7 +174,7 @@ function buildTokenWindowSections(content: string, options: ChunkMarkdownOptions
       heading: extractFirstHeading(rawContent) ?? "Introduction",
       rawContent
     }));
-    if (end >= tokenIds.length) {
+    if (end >= content.length) {
       break;
     }
   }
@@ -228,33 +272,41 @@ function splitLargeSection(section: SectionDraft, maxTokens: number): SectionDra
 function splitTextByTokenLimit(text: string, maxTokens: number): string[] {
   const sentences = splitBySentenceBoundary(text);
   const chunks: string[] = [];
-  let buffer = "";
+  // Accumulate into an ARRAY, not a string.
+  //
+  // `buffer += sentence` re-copies the whole accumulated string on
+  // every sentence. For a paragraph of 200k table rows that is O(N^2)
+  // in bytes copied — several seconds of pure memcpy on the main
+  // thread, with no progress visible in the logs.
+  let buffer: string[] = [];
   let bufferTokens = 0;
+
+  const flush = () => {
+    if (buffer.length === 0) return;
+    const joined = buffer.join("");
+    if (joined.trim()) chunks.push(joined.trim());
+    buffer = [];
+    bufferTokens = 0;
+  };
 
   for (const sentence of sentences) {
     const sentenceTokens = estimateTokens(sentence);
     if (sentenceTokens > maxTokens) {
-      if (buffer.trim()) {
-        chunks.push(buffer.trim());
-        buffer = "";
-        bufferTokens = 0;
-      }
+      flush();
       chunks.push(...forceSplitByTokenLimit(sentence, maxTokens));
       continue;
     }
-    if (!buffer || bufferTokens + sentenceTokens <= maxTokens) {
-      buffer += sentence;
+    if (buffer.length === 0 || bufferTokens + sentenceTokens <= maxTokens) {
+      buffer.push(sentence);
       bufferTokens += sentenceTokens;
       continue;
     }
-    chunks.push(buffer.trim());
-    buffer = sentence;
+    flush();
+    buffer.push(sentence);
     bufferTokens = sentenceTokens;
   }
 
-  if (buffer.trim()) {
-    chunks.push(buffer.trim());
-  }
+  flush();
   return chunks.filter(Boolean);
 }
 
@@ -267,17 +319,43 @@ function forceSplitByTokenLimit(text: string, maxTokens: number): string[] {
   const chunks: string[] = [];
   let remaining = text.trim();
 
+  // Character budget per chunk, derived from the token budget with the
+  // same conservative CJK ratio text-utils.ts uses.
+  //
+  // The previous version called estimateTokens(remaining) on the WHOLE
+  // remaining string on every iteration, and findPrefixLengthByTokenLimit
+  // then did log2(N) more estimates over shrinking prefixes. For a
+  // multi-megabyte paragraph that is O(N^2) tokenizer work — the
+  // dominant cost of the "UI stops loading" stall.
+  //
+  // Instead: take a character window sized from the token budget,
+  // then trim it to the real token limit with the exact tokenizer.
+  // The window is bounded (≤ ~12k chars), so the exact check is cheap.
+  const CHARS_PER_TOKEN = 1.5;
+  const windowChars = Math.max(1, Math.floor(maxTokens * CHARS_PER_TOKEN));
+
   while (remaining) {
-    if (estimateTokens(remaining) <= maxTokens) {
-      chunks.push(remaining);
-      break;
+    if (remaining.length <= windowChars) {
+      // Small enough that the exact count is affordable.
+      if (estimateTokens(remaining) <= maxTokens) {
+        chunks.push(remaining);
+        break;
+      }
+      // Too big even at the window size — fall through to the trim.
+      let cut = findPrefixLengthByTokenLimit(remaining, maxTokens);
+      if (cut <= 0) cut = 1;
+      chunks.push(remaining.slice(0, cut).trim());
+      remaining = remaining.slice(cut).trimStart();
+      continue;
     }
 
-    let cut = findPrefixLengthByTokenLimit(remaining, maxTokens);
-    if (cut <= 0) {
-      cut = 1;
+    // Large input: use the cheap ratio to pick a starting cut, then
+    // trim with the exact tokenizer on the bounded window.
+    let cut = windowChars;
+    while (cut > 1 && estimateTokens(remaining.slice(0, cut)) > maxTokens) {
+      cut = Math.floor(cut * 0.9);
     }
-
+    if (cut <= 0) cut = 1;
     chunks.push(remaining.slice(0, cut).trim());
     remaining = remaining.slice(cut).trimStart();
   }

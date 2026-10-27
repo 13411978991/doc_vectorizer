@@ -34,9 +34,9 @@ import {
   readdirSync,
   copyFileSync,
 } from "node:fs";
-import { join, dirname, relative } from "node:path";
+import { join, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(__dirname);
@@ -132,10 +132,38 @@ function walkModule(pkgDir) {
     for (const ent of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, ent.name);
       if (ent.isDirectory()) {
-        if (ent.name === "test" || ent.name === "__tests__" || ent.name === "node_modules") continue;
+        if (ent.name === "test" || ent.name === "__tests__") continue;
+        // Descend into EVERY nested node_modules package — mirroring
+        // build-sea-bundle.mjs's walkModule. Without this, nested
+        // installs like @xenova/transformers/node_modules/sharp
+        // (sharp@0.32, which requires "color") never reach the cache,
+        // and the embedding worker dies with MODULE_NOT_FOUND at
+        // runtime (2026-10-27, v2).
+        if (ent.name === "node_modules") {
+          let sub;
+          try { sub = readdirSync(full, { withFileTypes: true }); } catch { continue; }
+          for (const subEnt of sub) {
+            if (!subEnt.isDirectory() || subEnt.name.startsWith(".")) continue;
+            walk(join(full, subEnt.name));
+          }
+          continue;
+        }
+        // Same llama filter as the backend: only JSON/LICENSE files,
+        // never the llama.cpp source tree.
+        if (ent.name === "llama") {
+          let llEnts;
+          try { llEnts = readdirSync(full, { withFileTypes: true }); } catch { continue; }
+          for (const ll of llEnts) {
+            if (ll.isFile() && (/\.json$/i.test(ll.name) || /^license/i.test(ll.name))) {
+              const llFull = join(full, ll.name);
+              out.set(relative(pkgDir, llFull), readFileSync(llFull));
+            }
+          }
+          continue;
+        }
         walk(full);
       } else if (ent.isFile()) {
-        if (/\.(node|dll|so|dylib|bin|dat|onnx|json|js|cjs|mjs)$/i.test(ent.name)) {
+        if (/\.(node|dll|so|dylib|bin|dat|onnx|json|js|cjs|mjs|wasm)$/i.test(ent.name)) {
           out.set(relative(pkgDir, full), readFileSync(full));
         }
       }
@@ -176,11 +204,32 @@ function stepNativeCache() {
   // manifest sidecar. Avoids the V8 512 MB single-string ceiling
   // that the old single-JSON base64 map blew up against.
   const cacheDir = join(DIST, "native-cache");
-  if (existsSync(cacheDir)) rmSync(cacheDir, { recursive: true, force: true });
+  // Do NOT wipe: in the full release chain build-sea-bundle.mjs runs
+  // FIRST and has already built the complete cache (nested node_modules
+  // walk + the backend's full manifest). The old wipe-and-rebuild left
+  // the cache PARTIAL — most notably dropping
+  // @xenova/transformers/node_modules/sharp — while the backend
+  // manifest still listed the full file set, so the runtime background
+  // unpack hit ENOENT and the embedding worker died with
+  // "Cannot find module 'color'" (2026-10-27, v2). Merge instead:
+  // add only files that are missing (same node_modules source, so an
+  // existing file is byte-identical).
   mkdirSync(cacheDir, { recursive: true });
   const manifest = { __root__: cacheDir, packages: {} };
   let totalBytes = 0;
-  for (const pkg of allNativeDeps) {
+  // Skip the GPU runtime packages (CUDA / Vulkan) — 0.60 GB of the
+  // payload that most installs never touch. See the same block in
+  // build-sea-bundle.mjs for the full rationale.
+  const includeGpuPackages = process.env.SAG_INCLUDE_GPU_PACKAGES === "1";
+  const GPU_PACKAGE_RE = /(^|\/)(win|linux|macos)-(x64|arm64)-(cuda|cuda-ext|vulkan)(\/|$)/;
+  const seenDeps = new Set(allNativeDeps);
+  // Index-based loop: the body may APPEND newly discovered nested deps.
+  for (let depIdx = 0; depIdx < allNativeDeps.length; depIdx++) {
+    const pkg = allNativeDeps[depIdx];
+    if (!includeGpuPackages && GPU_PACKAGE_RE.test(pkg)) {
+      log(`  - skipping GPU package (${pkg})`);
+      continue;
+    }
     const pkgDir = join(ROOT, "node_modules", pkg);
     if (!existsSync(pkgDir)) {
       log(`  ! ${pkg} not installed — runtime will skip`);
@@ -194,12 +243,38 @@ function stepNativeCache() {
     const pkgMap = {};
     for (const [rel, buf] of files) {
       const outPath = join(cacheDir, pkg, rel);
-      mkdirSync(dirname(outPath), { recursive: true });
-      writeFileSync(outPath, buf);
+      // Merge mode (see above): never clobber a file the backend's
+      // build already wrote — same node_modules source, same bytes.
+      if (!existsSync(outPath)) {
+        mkdirSync(dirname(outPath), { recursive: true });
+        writeFileSync(outPath, buf);
+        totalBytes += buf.length;
+      }
       pkgMap[rel] = rel;
-      totalBytes += buf.length;
     }
     manifest.packages[pkg] = pkgMap;
+    // Nested installs bundled inside this package (e.g.
+    // @xenova/transformers/node_modules/sharp@0.32) can declare deps
+    // the ROOT install doesn't have (color, simple-get, tar-fs…).
+    // Their package.json files ride along in the walk above; union
+    // their dependency names into the walk list so the manifest
+    // carries them too — otherwise the nested copy SHADOWS the
+    // top-level one at runtime (Node resolves the nested copy first)
+    // and dies with "Cannot find module 'color'" (2026-10-27).
+    for (const [rel, buf] of files) {
+      if (!/(^|[\\/])package\.json$/.test(rel)) continue;
+      let nestedJson;
+      try { nestedJson = JSON.parse(buf.toString("utf8")); } catch { continue; }
+      for (const dep of [
+        ...Object.keys(nestedJson.dependencies || {}),
+        ...Object.keys(nestedJson.optionalDependencies || {}),
+      ]) {
+        if (!seenDeps.has(dep)) {
+          seenDeps.add(dep);
+          allNativeDeps.push(dep);
+        }
+      }
+    }
   }
   const bundlePath = join(DIST, "sag-mcp.bundle.cjs");
   if (existsSync(bundlePath)) {
@@ -581,10 +656,13 @@ function stepBlob() {
   // the final .exe (see SAG_SEA_NODE_EXE in build-sea-bundle.mjs).
   const nodeExe = process.env.SAG_SEA_NODE_EXE || "node";
   log(`sea: generating stdio blob via ${nodeExe}`);
-  execSync(`"${nodeExe}" --experimental-sea-config sea-config-mcp.json`, {
-    cwd: DIST,
+  // execFileSync (not execSync with shell:true): the project path
+  // contains CJK characters and cmd.exe cannot parse them, so the
+  // shell form failed with "The system cannot find the path specified"
+  // even though the very same command worked from PowerShell.
+  execFileSync(resolve(nodeExe), ["--experimental-sea-config", resolve(DIST, "sea-config-mcp.json")], {
+    cwd: resolve(DIST),
     stdio: "inherit",
-    shell: true,
   });
   const blob = join(DIST, "sag-mcp.blob");
   log(

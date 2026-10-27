@@ -37,9 +37,9 @@ import {
   readdirSync,
   copyFileSync,
 } from "node:fs";
-import { join, dirname, basename, relative } from "node:path";
+import { join, dirname, basename, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { argv } from "node:process";
 import { createHash } from "node:crypto";
 
@@ -466,9 +466,24 @@ function stepNativeMap() {
           copyFileSync(bundlePath, join(bundleDir, "sag.bundle.cjs"));
           log("  + refreshed dist/native-cache/__bundle__/sag.bundle.cjs");
         }
+        // Refresh the embedding worker too, and keep the manifest's
+        // __embeddingWorker__ pointer. Without this the fast-build path
+        // would drop the worker from the manifest and the runtime
+        // would fall back to in-process ONNX (the "UI stops loading"
+        // freeze). See the note at the manifest write site.
+        const workerPath = join(DIST, "sag.embedding-worker.cjs");
+        if (existsSync(workerPath)) {
+          const bundleDir = join(nativeCacheDir, "__bundle__");
+          mkdirSync(bundleDir, { recursive: true });
+          copyFileSync(workerPath, join(bundleDir, "sag.embedding-worker.cjs"));
+          log("  + refreshed dist/native-cache/__bundle__/sag.embedding-worker.cjs");
+        }
         const raw = readFileSync(manifestPath, "utf8");
         const manifest = JSON.parse(raw);
         manifest.__bundle__ = "__bundle__/sag.bundle.cjs";
+        if (existsSync(workerPath)) {
+          manifest.__embeddingWorker__ = "__bundle__/sag.embedding-worker.cjs";
+        }
         // P30 fix: after refreshing the bundle, the per-machine cache
         // fingerprint MUST be recomputed too. Without this, the
         // manifest's __fingerprint__ still describes the pre-refresh
@@ -695,6 +710,27 @@ function stepNativeMap() {
   // where. The manifest is a few hundred KB at most.
   if (existsSync(nativeCacheDir)) rmSync(nativeCacheDir, { recursive: true, force: true });
   mkdirSync(nativeCacheDir, { recursive: true });
+  // NOTE: the rmSync above wipes EVERYTHING under dist/native-cache,
+  // including the `__bundle__/sag.embedding-worker.cjs` that
+  // stepWorkerBundle() staged a moment earlier. That is why the
+  // embedding worker never reached the installed app: the file was
+  // written, then deleted, then the manifest (built from this
+  // directory) had no record of it. The runtime unpack therefore had
+  // nothing to copy out, the client could not find the worker, and
+  // every embedding call fell back to in-process ONNX on the MAIN
+  // thread — which is what froze the HTTP server during ingest.
+  //
+  // We re-stage the worker right after the wipe (below) and register
+  // it in the manifest so it survives to the installed app.
+  const workerBundleOut = join(DIST, "sag.embedding-worker.cjs");
+  const workerStagePath = join(nativeCacheDir, "__bundle__", "sag.embedding-worker.cjs");
+  if (existsSync(workerBundleOut)) {
+    mkdirSync(join(nativeCacheDir, "__bundle__"), { recursive: true });
+    copyFileSync(workerBundleOut, workerStagePath);
+    log("✓ embedding-worker re-staged after native-cache wipe:", workerStagePath);
+  } else {
+    log("  ! dist/sag.embedding-worker.cjs missing — local-BGE will fall back to in-process ONNX");
+  }
   // Layout:
   //   dist/native-cache/<pkg>/<rel>      — raw binary, mirrors node_modules layout
   //   dist/native-cache/manifest.json    — index of every <pkg>/<rel>
@@ -703,7 +739,33 @@ function stepNativeMap() {
   //     "packages": { "<pkg>": { "<rel>": "<relative path under cache dir>" } } }
   const manifest = { __root__: nativeCacheDir, packages: {} };
   let totalBytes = 0;
+  // GPU runtime binaries that most deployments never use.
+  //
+  // node-llama-cpp ships one platform package per accelerator:
+  //   win-x64-cuda      (138 MB, mostly ggml-cuda.dll)
+  //   win-x64-cuda-ext  (350 MB, the CUDA fallback DLL)
+  //   win-x64-vulkan    (52 MB,  ggml-vulkan.dll)
+  //
+  // Together they are 0.60 GB of the 1.00 GB native-cache — 60% of the
+  // cold-boot copy — on a machine that has no NVIDIA GPU. Windows AV
+  // scans every one of those DLLs as it lands, so the first boot either
+  // crawls for many minutes or hangs outright (observed 2026-10-26: the
+  // unpack stopped at 2,795 files and never finished).
+  //
+  // They are only needed for local GGUF inference on an NVIDIA/Vulkan
+  // GPU. The embedding path (local-bge / ONNX) does not use them, and
+  // the local-LLM path can be re-enabled per install by shipping them
+  // back in. So we exclude them from the default payload.
+  //
+  // Set SAG_INCLUDE_GPU_PACKAGES=1 to keep them (for a machine that
+  // really does run a local GGUF model on an NVIDIA GPU).
+  const includeGpuPackages = process.env.SAG_INCLUDE_GPU_PACKAGES === "1";
+  const GPU_PACKAGE_RE = /(^|\/)(win|linux|macos)-(x64|arm64)-(cuda|cuda-ext|vulkan)(\/|$)/;
   for (const pkg of allNativeDeps) {
+    if (!includeGpuPackages && GPU_PACKAGE_RE.test(pkg)) {
+      log(`  - skipping GPU package (${pkg}) — set SAG_INCLUDE_GPU_PACKAGES=1 to keep it`);
+      continue;
+    }
     // Some packages (notably slice-ansi, which @node-llama-cpp uses
     // without declaring) only exist as a nested install under
     // another package's node_modules subdir. Walk every possible
@@ -754,6 +816,39 @@ function stepNativeMap() {
     manifest.__bundle__ = "__bundle__/sag.bundle.cjs";
     totalBytes += bundleBuf.length;
     log("  + bundled sag.bundle.cjs");
+  }
+  // Register the embedding worker in the manifest so the RUNTIME
+  // unpack copies it into the per-machine native-cache dir
+  // (<exe>/native-cache/<hash>/__bundle__/sag.embedding-worker.cjs).
+  //
+  // Without this the worker file existed only in the build tree and
+  // never reached the installed app. The client then logged
+  //   "embedding worker terminated: boot timeout"
+  //   "local-bge worker unavailable - falling back to in-process embedding"
+  // and every embedding call ran ONNX on the MAIN thread. That is the
+  // direct cause of the "UI stops loading" symptom: one 122-chunk
+  // workbook spent 383 s in chunkEmbedding + 320 s in sectionEmbedding
+  // + 444 s in eventPrep ON the event loop, so /health and every
+  // watched-folders endpoint timed out for the whole duration. The
+  // worker exists precisely to isolate that work in a worker_thread.
+  //
+  // It is carried as a dedicated manifest field (mirroring
+  // __bundle__) rather than as a manifest *package*, because the
+  // runtime unpack copies packages into <base>/node_modules/<pkg>/ —
+  // a "__bundle__" pseudo-package would land in
+  // node_modules/__bundle__/, not next to the bundle where the client
+  // looks for it.
+  {
+    const workerRel = "sag.embedding-worker.cjs";
+    const workerSrc = join(nativeCacheDir, "__bundle__", workerRel);
+    if (existsSync(workerSrc)) {
+      const workerBuf = readFileSync(workerSrc);
+      manifest.__embeddingWorker__ = "__bundle__/" + workerRel;
+      totalBytes += workerBuf.length;
+      log("  + registered embedding-worker in manifest: __bundle__/" + workerRel);
+    } else {
+      log("  ! embedding-worker NOT staged — local-BGE will fall back to in-process ONNX");
+    }
   }
   // Embed a content fingerprint in the manifest so the runtime
   // `unpackOnce` knows when the native-cache has been patched
@@ -1253,6 +1348,87 @@ function stepEntry() {
     } catch { /* ignore */ }
   }
 
+  // Compute the COMPLETE require-closure of the embedding roots over the
+  // manifest's package set. It is injected into the runtime entry as the
+  // background-unpack priority tier; the ".sag-unpack-embedding-ready"
+  // stamp is written only after ALL of these packages are in place, so
+  // the app's embedding gate never opens on a half-copied tree.
+  //
+  // Why computed (not hand-listed): the first hand-written list forgot
+  // onnxruntime-web — @xenova/transformers requires it from
+  // src/backends/onnx.js — so the stamp landed while the worker still
+  // crashed, and the load failure was cached for the whole process
+  // lifetime (2026-10-27, v2 smoke test).
+  //
+  // Why nested package.jsons are walked too: the manifest flattens
+  // nested installs into the PARENT package's file list (e.g.
+  // @xenova/transformers carries node_modules/sharp@0.32 inside its own
+  // cache tree). A nested copy can declare deps the root install does
+  // not — sharp@0.32 declares `color`, root sharp@0.35 does not — and
+  // the worker dies with "Cannot find module 'color'" if the tier only
+  // follows root package.jsons (2026-10-27, v2 smoke test round 2).
+  const EMBEDDING_ROOTS = ["@xenova/transformers", "onnxruntime-node", "onnxruntime-web", "sharp", "@huggingface/jinja"];
+  const embeddingPriority = [];
+  {
+    const manifestForClosure = JSON.parse(readFileSync(join(DIST, "sag.native-map.manifest.json"), "utf8"));
+    const pkgSet = manifestForClosure.packages || {};
+    const seen = new Set();
+    const queue = [...EMBEDDING_ROOTS];
+    // Collect every package.json under a cache-tree package dir: the
+    // root one plus each nested node_modules copy (bounded depth —
+    // pnpm nests at most a few levels).
+    const collectPkgJsonPaths = (pkgRoot) => {
+      const found = [];
+      const walk = (dir, depth) => {
+        if (depth > 6) return;
+        const own = join(dir, "package.json");
+        if (existsSync(own)) found.push(own);
+        let ents;
+        try { ents = readdirSync(join(dir, "node_modules"), { withFileTypes: true }); } catch { return; }
+        for (const ent of ents) {
+          if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
+          const sub = join(dir, "node_modules", ent.name);
+          if (ent.name.startsWith("@")) {
+            // Scoped namespace: each member is a package dir.
+            let scoped;
+            try { scoped = readdirSync(sub, { withFileTypes: true }); } catch { continue; }
+            for (const s of scoped) {
+              if (s.isDirectory() && !s.name.startsWith(".")) walk(join(sub, s.name), depth + 1);
+            }
+          } else {
+            walk(sub, depth + 1);
+          }
+        }
+      };
+      walk(pkgRoot, 0);
+      return found;
+    };
+    while (queue.length) {
+      const pkg = queue.shift();
+      if (seen.has(pkg) || !pkgSet[pkg]) continue;
+      seen.add(pkg);
+      embeddingPriority.push(pkg);
+      for (const pjPath of collectPkgJsonPaths(join(DIST, "native-cache", pkg))) {
+        let pkgJson;
+        try {
+          pkgJson = JSON.parse(readFileSync(pjPath, "utf8"));
+        } catch { continue; }
+        for (const dep of [
+          ...Object.keys(pkgJson.dependencies || {}),
+          ...Object.keys(pkgJson.optionalDependencies || {}),
+        ]) {
+          if (!seen.has(dep)) queue.push(dep);
+        }
+      }
+    }
+  }
+  log(
+    "entry: embedding priority tier =",
+    embeddingPriority.length,
+    "package(s):",
+    embeddingPriority.join(", "),
+  );
+
   const entry = `// AUTO-GENERATED by build-sea-bundle.mjs. Do not edit.
 // SAG SEA bootstrap. Decodes native modules into a stable tmp dir and
 // patches Module._resolveFilename so require('better-sqlite3') etc. work
@@ -1339,28 +1515,97 @@ function unpackOnce() {
   const bundleDir = path.join(baseDir, "__bundle__");
   fs.mkdirSync(nodeModulesDir, { recursive: true });
   fs.mkdirSync(bundleDir, { recursive: true });
-  for (const [pkg, files] of Object.entries(MANIFEST.packages || {})) {
-    const pkgDir = path.join(nodeModulesDir, pkg);
-    fs.mkdirSync(pkgDir, { recursive: true });
-    for (const [rel, cachedRel] of Object.entries(files)) {
-      const out = path.join(pkgDir, rel);
-      fs.mkdirSync(path.dirname(out), { recursive: true });
-      if (fs.existsSync(out)) continue;
-      const src = path.join(sourceCacheDir, pkg, cachedRel);
+  // The bulk native-package copy runs in the BACKGROUND (see
+  // unpackNativePackagesInBackground below) so the HTTP server can bind
+  // immediately. Here we copy the packages the bundle requires AT
+  // MODULE LOAD — if one is missing the process dies with
+  // "Cannot find module 'X'" before the server binds.
+  //
+  // The set is the CLOSURE over the bundle's own top-level requires,
+  // resolved from each package's "dependencies" in package.json. A
+  // hand-maintained list is not enough: better-sqlite3 pulls in
+  // "bindings", which pulls in "file-uri-to-path", and each of those
+  // is required at load time too. We discovered that the hard way
+  // ("Cannot find module 'bindings'" at boot).
+  //
+  // The roots are the bare specifiers the bundle requires directly:
+  //   ajv, ajv-formats, pg-native, better-sqlite3, sqlite-vec
+  //
+  // Everything else (the big optional trees: node-llama-cpp,
+  // onnxruntime, transformers, …) is copied in the background pass.
+  //
+  // WHY the split: Windows AV scans every .dll / .node as it lands.
+  // Copying the node-llama-cpp DLLs can block for minutes — and because
+  // the whole unpack used to run at module load, the server never got a
+  // chance to bind. The user saw "nothing loads" on first run, and if
+  // the copy stalled on a locked file the app hung forever (observed
+  // 2026-10-26: the unpack stopped at 2,795 files and never finished).
+  const EAGER_ROOTS = ["ajv", "ajv-formats", "pg-native", "better-sqlite3", "sqlite-vec"];
+  const eagerPackages = new Set();
+  {
+    const queue = [...EAGER_ROOTS];
+    while (queue.length) {
+      const pkg = queue.shift();
+      if (eagerPackages.has(pkg)) continue;
+      eagerPackages.add(pkg);
+      // Resolve this package's dependencies from the SOURCE cache's
+      // package.json (the per-machine copy may not exist yet).
+      let pkgJson;
       try {
-        fs.copyFileSync(src, out);
-      } catch (err) {
-        throw new Error(
-          "failed to copy " + src + " -> " + out + ": " + err.message +
-          " (This usually means Windows AV or SmartScreen is locking the .node/.dll file. " +
-          "Add the native-cache/ dir to your AV exclusion list and try again.)"
+        pkgJson = JSON.parse(
+          fs.readFileSync(path.join(sourceCacheDir, pkg, "package.json"), "utf8")
         );
+      } catch {
+        continue;
+      }
+      for (const dep of Object.keys(pkgJson.dependencies || {})) {
+        // Only follow deps that are actually shipped in the cache.
+        if (MANIFEST.packages[dep] && !eagerPackages.has(dep)) {
+          queue.push(dep);
+        }
+      }
+      // optionalDependencies matter too: sqlite-vec loads its native
+      // extension from the optional "sqlite-vec-windows-x64"
+      // package, and without it the DB boots without vector support
+      // ("sqlite-vec load failed: Cannot find module
+      // 'sqlite-vec-windows-x64/vec0.dll'").
+      for (const dep of Object.keys(pkgJson.optionalDependencies || {})) {
+        if (MANIFEST.packages[dep] && !eagerPackages.has(dep)) {
+          queue.push(dep);
+        }
       }
     }
-    if (!fs.existsSync(path.join(pkgDir, "package.json"))) {
-      fs.writeFileSync(
-        path.join(pkgDir, "package.json"),
-        JSON.stringify({ name: pkg, version: "0.0.0", main: "index.js", type: "commonjs" }, null, 2),
+  }
+  for (const [pkg, files] of Object.entries(MANIFEST.packages || {})) {
+    const pkgDir = path.join(nodeModulesDir, pkg);
+    if (!eagerPackages.has(pkg)) {
+      try {
+        fs.mkdirSync(pkgDir, { recursive: true });
+      } catch {
+        /* the background pass creates it */
+      }
+      continue;
+    }
+    try {
+      fs.mkdirSync(pkgDir, { recursive: true });
+      for (const [rel, cachedRel] of Object.entries(files)) {
+        const out = path.join(pkgDir, rel);
+        if (fs.existsSync(out)) continue;
+        fs.mkdirSync(path.dirname(out), { recursive: true });
+        fs.copyFileSync(path.join(sourceCacheDir, pkg, cachedRel), out);
+      }
+      if (!fs.existsSync(path.join(pkgDir, "package.json"))) {
+        fs.writeFileSync(
+          path.join(pkgDir, "package.json"),
+          JSON.stringify({ name: pkg, version: "0.0.0", main: "index.js", type: "commonjs" }, null, 2),
+        );
+      }
+    } catch (err) {
+      // A locked file here is fatal — the bundle cannot run without it.
+      throw new Error(
+        "failed to stage required package " + pkg + ": " + err.message +
+        " (This usually means Windows AV is locking the .node/.dll file. " +
+        "Add the native-cache/ dir to your AV exclusion list and try again.)"
       );
     }
   }
@@ -1383,10 +1628,197 @@ function unpackOnce() {
       );
     }
   }
-  return baseDir;
+  // Copy the embedding worker next to the bundle.
+  //
+  // embedding-worker-client.ts looks for
+  //   <exeDir>/native-cache/__bundle__/sag.embedding-worker.cjs
+  // and, if it is missing, logs
+  //   "local-bge worker unavailable - falling back to in-process embedding"
+  // and runs ONNX on the MAIN thread. That fallback blocks the event
+  // loop for the whole embedding batch, so /health and every
+  // watched-folders endpoint time out while a workbook is ingested —
+  // which is exactly the "UI stops loading" symptom.
+  //
+  // Always overwrite (same reasoning as the bundle above): a stale
+  // worker from a previous build must not survive a version change.
+  if (MANIFEST.__embeddingWorker__) {
+    const workerSrc = path.join(sourceCacheDir, MANIFEST.__embeddingWorker__);
+    const workerDst = path.join(bundleDir, "sag.embedding-worker.cjs");
+    try {
+      fs.copyFileSync(workerSrc, workerDst);
+    } catch (err) {
+      throw new Error(
+        "failed to refresh __bundle__/sag.embedding-worker.cjs: " + err.message +
+        " (This usually means Windows AV is locking the file. " +
+        "Add the native-cache/ dir to your AV exclusion list.)"
+      );
+    }
+  }
+  return { baseDir, manifest: MANIFEST };
 }
 
-const NATIVE_DIR = unpackOnce();
+// ── Background unpack of the bulk native packages ───────────────────
+//
+// The runtime unpack above copies the bundle + worker (small, critical)
+// synchronously so the server can start immediately. The remaining
+// ~6,800 native files are copied in the BACKGROUND.
+//
+// The manifest is passed in rather than re-read: it is a local const
+// inside unpackOnce(), so a sibling function cannot see it (we tried —
+// the pass died immediately with "MANIFEST is not defined").
+//
+// Everything here is ASYNC on purpose. The synchronous copy blocks the
+// event loop for the whole copy — and when Windows AV holds a large
+// .dll, that block can last minutes. With a synchronous copy the
+// server could not answer /health for that whole time, which is
+// exactly the "UI stops loading" symptom. The async version keeps the
+// event loop free: the server answers while the copy proceeds behind
+// it.
+//
+// A file the AV holds is retried a few times and then SKIPPED (not
+// fatal) — the optional package it belongs to simply stays
+// unavailable, which is far better than an app that never starts.
+// Each copy has a timeout so one wedged file cannot stall the pass.
+async function unpackNativePackagesInBackground(baseDir, MANIFEST) {
+  const sourceCacheDir = path.join(path.dirname(process.execPath), "native-cache");
+  const nodeModulesDir = path.join(baseDir, "node_modules");
+  const stamp = path.join(baseDir, ".sag-unpack-complete");
+  const fsp = fs.promises;
+  let skipped = 0;
+  let copied = 0;
+  const MAX_ATTEMPTS = 3;
+  const COPY_TIMEOUT_MS = 20_000;
+  // Log the start so a failure to even begin is visible. The pass runs
+  // before the log tees are installed, so this goes to the raw stdout.
+  console.log("[sag-boot] native-cache background unpack starting...");
+  const copyWithTimeout = async (src, dst) => {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("copy timed out")), COPY_TIMEOUT_MS);
+      // NOTE: do NOT unref() this timer. An unref'd timer does not keep
+      // the event loop alive, and — critically — it does not fire
+      // while the loop is otherwise idle. The pass would then hang
+      // forever on a wedged copy instead of timing out. (Measured: an
+      // unref'd timer scheduled for 3 s never fired; the process had
+      // nothing else pending.) The timer is always cleared in the
+      // finally block, so it cannot keep the process alive beyond the
+      // copy it guards.
+    });
+    try {
+      await Promise.race([fsp.copyFile(src, dst), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  // Embedding-critical packages FIRST. The orphan-requeue reaper (and
+  // any user-triggered sync) starts embedding within seconds of boot;
+  // if the worker cannot require @xenova/transformers because its files
+  // are still mid-copy, embedding falls back to the in-process ONNX
+  // path and blocks the main event loop — the exact "UI stops loading
+  // after a restart" symptom (2026-10-27). Copying this tier first
+  // shrinks the window from minutes (full pass) to seconds, and the
+  // stamp written after the tier is what the app's native-cache-ready
+  // gate waits on.
+  //
+  // The tier is the COMPLETE require-closure of the embedding roots,
+  // computed at build time from each package's package.json
+  // (dependencies + optionalDependencies) over the manifest's package
+  // set. A hand-written list is not enough: the first attempt forgot
+  // onnxruntime-web (@xenova/transformers requires it from
+  // src/backends/onnx.js), the stamp landed early, the worker crashed
+  // on the missing package, and the load failure got cached for the
+  // whole process lifetime.
+  const EMBEDDING_FIRST_SET = new Set(__EMBEDDING_PRIORITY_JSON__);
+  const EMBEDDING_FIRST = (pkg) => EMBEDDING_FIRST_SET.has(pkg);
+  const copyOnePackage = async (pkg, files) => {
+    const pkgDir = path.join(nodeModulesDir, pkg);
+    try {
+      await fsp.mkdir(pkgDir, { recursive: true });
+    } catch {
+      return;
+    }
+    for (const [rel, cachedRel] of Object.entries(files)) {
+      const out = path.join(pkgDir, rel);
+      if (fs.existsSync(out)) continue;
+      const src = path.join(sourceCacheDir, pkg, cachedRel);
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          await fsp.mkdir(path.dirname(out), { recursive: true });
+          await copyWithTimeout(src, out);
+          copied++;
+          break;
+        } catch (err) {
+          if (attempt === MAX_ATTEMPTS) {
+            skipped++;
+            continue;
+          }
+          // AV lock — back off briefly and retry.
+          await new Promise((r) => setTimeout(r, 250 * attempt));
+        }
+      }
+    }
+    try {
+      if (!fs.existsSync(path.join(pkgDir, "package.json"))) {
+        await fsp.writeFile(
+          path.join(pkgDir, "package.json"),
+          JSON.stringify({ name: pkg, version: "0.0.0", main: "index.js", type: "commonjs" }, null, 2),
+        );
+      }
+    } catch {
+      /* best-effort */
+    }
+    // Progress line, so a stall is visible in the log instead of
+    // looking like a frozen app.
+    console.log(
+      "[sag-boot] native-cache: " + copied + " copied, " + skipped + " skipped (at " + pkg + ")"
+    );
+  };
+  const allEntries = Object.entries(MANIFEST.packages || {});
+  const firstTier = allEntries.filter((entry) => EMBEDDING_FIRST(entry[0]));
+  const restTier = allEntries.filter((entry) => !EMBEDDING_FIRST(entry[0]));
+  for (const entry of firstTier) {
+    await copyOnePackage(entry[0], entry[1]);
+  }
+  // Signal that the embedding-critical tier has landed. The app's
+  // waitForNativeCacheReady() gate resolves on this stamp (or on the
+  // final .sag-unpack-complete stamp written by older builds).
+  try {
+    fs.writeFileSync(path.join(baseDir, ".sag-unpack-embedding-ready"), "1");
+  } catch {
+    /* best-effort */
+  }
+  console.log("[sag-boot] native-cache: embedding-critical packages ready");
+  for (const entry of restTier) {
+    await copyOnePackage(entry[0], entry[1]);
+  }
+  try {
+    fs.writeFileSync(stamp, MANIFEST.__fingerprint__ || "1");
+  } catch {
+    /* best-effort */
+  }
+  console.log(
+    "[sag-boot] native-cache background unpack done: " + copied +
+    " file(s) copied, " + skipped + " skipped"
+  );
+}
+
+const UNPACKED = unpackOnce();
+const NATIVE_DIR = UNPACKED.baseDir;
+
+// Kick off the heavy native-package copy in the background so the HTTP
+// server can bind immediately. Failures here are non-fatal: the
+// optional native packages that did not make it simply stay absent.
+void unpackNativePackagesInBackground(NATIVE_DIR, UNPACKED.manifest).catch((err) => {
+  console.error("[sag-boot] native-cache background unpack failed:", err && err.message);
+  try {
+    process.stderr.write(
+      "[sag-boot] native-cache background unpack failed: " +
+        ((err && err.stack) || String(err)) + String.fromCharCode(10)
+    );
+  } catch {
+    /* ignore */
+  }
+});
 
 // pdfjs-dist's legacy build references DOMMatrix / Path2D at module
 // top-level (e.g. SCALE_MATRIX = new DOMMatrix()). When esbuild
@@ -1461,7 +1893,26 @@ const Module = require("module");
       const origStdoutWrite = process.stdout.write.bind(process.stdout);
       process.stdout.write = (chunk, ...rest) => {
         try { fs.writeSync(outFd, chunk); } catch {}
-        return origStdoutWrite(chunk, ...rest);
+        try {
+          return origStdoutWrite(chunk, ...rest);
+        } catch (err) {
+          // EPIPE: the parent (the Electron shell) closed the pipe.
+          //
+          // This MUST be swallowed. The original code let it throw, and
+          // because the wrapper runs on EVERY log line, the throw was
+          // itself logged — which produced a new EPIPE, which was
+          // logged again, forever. A single run generated 41,933
+          // EPIPE stack traces (76 MB of log) and burned CPU on the
+          // error path instead of doing real work.
+          //
+          // The file tee above still works, so the log file keeps
+          // receiving everything even after stdout is gone.
+          const code = err && err.code;
+          if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") {
+            return true;
+          }
+          throw err;
+        }
       };
       // Surface where the log is going so the user can find it.
       try {
@@ -1475,7 +1926,18 @@ const Module = require("module");
       const origStderrWrite = process.stderr.write.bind(process.stderr);
       process.stderr.write = (chunk, ...rest) => {
         try { fs.writeSync(errFd, chunk); } catch {}
-        return origStderrWrite(chunk, ...rest);
+        try {
+          return origStderrWrite(chunk, ...rest);
+        } catch (err) {
+          // Same EPIPE storm as stdout: swallowing it here stops the
+          // error log from eating the disk (we saw a single run write
+          // 41,933 EPIPE stack traces).
+          const code = err && err.code;
+          if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") {
+            return true;
+          }
+          throw err;
+        }
       };
       try {
         process.stderr.write(
@@ -1499,7 +1961,9 @@ const Module = require("module");
 // do NOT write them next to the exe — end users should never see the
 // decryption helpers, and exposing them under exeDir/scripts/ would
 // defeat that.
-const SCRIPTS_DIR = path.join(unpackOnce(), "scripts");
+// Reuse the dir unpackOnce() already resolved — calling it again would
+// re-run the whole native-cache unpack.
+const SCRIPTS_DIR = path.join(NATIVE_DIR, "scripts");
 fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
 {
   const EXE_BASE_FOR_SCRIPTS = path.basename(process.execPath, ".exe");
@@ -1589,7 +2053,11 @@ bundleModule._compile(bundleSource, BUNDLE_PATH);
 if (typeof bundleModule.exports === "function") module.exports = bundleModule.exports;
 `;
   const entryPath = join(DIST, "sag.entry.cjs");
-  writeFileSync(entryPath, entry);
+  // Inject the build-time-computed embedding priority closure. A
+  // function replacer is used so `$`-sequences in the JSON can't be
+  // misread as replacement patterns.
+  const entryFinal = entry.replace("__EMBEDDING_PRIORITY_JSON__", () => JSON.stringify(embeddingPriority));
+  writeFileSync(entryPath, entryFinal);
   log(
     "✓ entry:",
     "dist/sag.entry.cjs",
@@ -1622,10 +2090,13 @@ function stepBlob() {
   // Default: host's `node`.
   const nodeExe = process.env.SAG_SEA_NODE_EXE || "node";
   log(`sea: generating blob via ${nodeExe} --experimental-sea-config`);
-  execSync(`"${nodeExe}" --experimental-sea-config sea-config.json`, {
-    cwd: DIST,
+  // execFileSync (not execSync with shell:true): the project path
+  // contains CJK characters and cmd.exe cannot parse them, so the
+  // shell form failed with "The system cannot find the path specified"
+  // even though the very same command worked from PowerShell.
+  execFileSync(resolve(nodeExe), ["--experimental-sea-config", resolve(DIST, "sea-config.json")], {
+    cwd: resolve(DIST),
     stdio: "inherit",
-    shell: true,
   });
   const blob = join(DIST, "sag.blob");
   log(

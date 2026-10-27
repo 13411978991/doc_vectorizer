@@ -24,6 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logger } from "../observability/logger.js";
+import { waitForNativeCacheReady } from "./native-cache-ready.js";
 import * as esbuild from "esbuild";
 
 type Pending = {
@@ -48,19 +49,60 @@ const pending = new Map<string, Pending>();
 
 function workerSourcePath(): string {
   // Look up the worker source in this order:
-  //   1. <process.execPath-dir>/native-cache/__bundle__/sag.embedding-worker.cjs
-  //      (the SEA staging layout — unpackOnce() writes both sag.bundle.cjs
-  //      and sag.embedding-worker.cjs into <exe-dir>/native-cache/__bundle__/
-  //      on every boot. The previous lookup at <exe-dir>/sag.embedding-worker.cjs
-  //      was a stale path that matched nothing.)
-  //   2. <process.execPath-dir>/sag.embedding-worker.cjs  (legacy dev layout)
-  //   3. %TEMP%/sag-sea-native-<sig>/__bundle__/sag.embedding-worker.cjs
+  //   0. $SAG_NATIVE_CACHE_DIR/__bundle__/sag.embedding-worker.cjs
+  //      (the SEA entry points straight at the per-machine staged dir —
+  //      the most precise source available; set for the backend).
+  //   1. <exeDir>/native-cache/<12-hex-hash>/__bundle__/sag.embedding-worker.cjs
+  //      (the per-machine hash layout — unpackOnce() stages the worker
+  //      AND its node_modules siblings under the same hash dir, so the
+  //      worker's require("@xenova/transformers") resolves via Node's
+  //      normal parent-walk even without NODE_PATH. Hash dirs whose
+  //      node_modules actually contain transformers are preferred over
+  //      an older build's leftover dir that may only hold the eager
+  //      subset. Needs no env var, so it also works in the
+  //      ingest-worker sidecar, whose entry does not set
+  //      SAG_NATIVE_CACHE_DIR.)
+  //   2. %TEMP%/sag-sea-native-<sig>/__bundle__/sag.embedding-worker.cjs
   //      (older staging shape — kept for back-compat with pre-iter17 installs)
-  //   4. <dirname>/embedding-worker.js                    (compiled dev fallback)
+  //   3. <dirname>/embedding-worker.js                    (compiled dev fallback)
+  //
+  // NOTE: <exeDir>/native-cache/__bundle__/sag.embedding-worker.cjs is
+  // deliberately NOT a candidate any more. That file is the SHIPPED
+  // source-cache copy staged by the build, and its sibling
+  // `node_modules/` does NOT exist at that level (the source cache
+  // lays packages out at native-cache/<pkg>/, not
+  // native-cache/node_modules/<pkg>/). Picking it made the worker
+  // crash at require("@xenova/transformers") with MODULE_NOT_FOUND and
+  // pushed every embedding call onto the in-process main-thread
+  // fallback — the "UI stops loading" freeze (observed 2026-10-27 on
+  // the v2 install, preflight probe failed every 60 s).
   const exeDir = path.dirname(process.execPath);
-  const candidates = [
-    path.join(exeDir, "native-cache", "__bundle__", "sag.embedding-worker.cjs"),
-    path.join(exeDir, "sag.embedding-worker.cjs"),
+  const candidates: string[] = [];
+  if (process.env.SAG_NATIVE_CACHE_DIR) {
+    candidates.push(
+      path.join(process.env.SAG_NATIVE_CACHE_DIR, "__bundle__", "sag.embedding-worker.cjs")
+    );
+  }
+  try {
+    const ncRoot = path.join(exeDir, "native-cache");
+    const withDeps: string[] = [];
+    const withoutDeps: string[] = [];
+    for (const e of readdirSync(ncRoot, { withFileTypes: true })) {
+      if (!e.isDirectory() || !/^[0-9a-f]{12}$/.test(e.name)) continue;
+      const hashDir = path.join(ncRoot, e.name);
+      const w = path.join(hashDir, "__bundle__", "sag.embedding-worker.cjs");
+      if (!existsSync(w)) continue;
+      if (existsSync(path.join(hashDir, "node_modules", "@xenova", "transformers", "package.json"))) {
+        withDeps.push(w);
+      } else {
+        withoutDeps.push(w);
+      }
+    }
+    candidates.push(...withDeps, ...withoutDeps);
+  } catch {
+    /* native-cache unreadable — fall through to the other candidates */
+  }
+  candidates.push(
     // Walk the SEA staging dir — the basename may vary across
     // versions, so glob for any sag-sea-native-* dir under tmpdir.
     ...(function findSeaStaging(): string[] {
@@ -80,7 +122,7 @@ function workerSourcePath(): string {
       }
     })(),
     path.join(path.dirname(fileURLToPath(import.meta.url)), "embedding-worker.js")
-  ];
+  );
   for (const c of candidates) {
     if (c && existsSync(c)) return c;
   }
@@ -273,7 +315,16 @@ function teardownWorker(reason: string): void {
 
 function ensureWorker(): Promise<void> {
   if (workerInitPromise) return workerInitPromise;
-  workerInitPromise = new Promise<void>((resolve, reject) => {
+  // Gate on the SEA background native-cache unpack: the worker FILE is
+  // staged eagerly, but its require("@xenova/transformers") resolves
+  // against node_modules that the background pass may still be copying.
+  // Spawning before the stamp lands crashes the worker at require time
+  // and pushes every embedding call onto the in-process main-thread
+  // path — the "UI stops loading after a restart" freeze. Bounded and
+  // memoized; a no-op once the stamp exists.
+  workerInitPromise = waitForNativeCacheReady().then(
+    () =>
+      new Promise<void>((resolve, reject) => {
     let workerPath: string;
     try {
       workerPath = workerSourcePath();
@@ -282,7 +333,59 @@ function ensureWorker(): Promise<void> {
       reject(err as Error);
       return;
     }
-    const w = new Worker(workerPath);
+    // The worker file lives in <base>/__bundle__/sag.embedding-worker.cjs
+    // but its externals (@xenova/transformers, onnxruntime-node, ...)
+    // live in <base>/node_modules/. A Worker thread resolves `require()`
+    // relative to ITS OWN file, so from __bundle__/ it would look in
+    // <base>/__bundle__/node_modules and fail with
+    //   "Cannot find module '@xenova/transformers'"
+    // — the worker then dies at boot and every embedding call silently
+    // falls back to in-process ONNX on the main thread (the "UI stops
+    // loading" freeze).
+    //
+    // The SEA entry solves the same problem for the MAIN bundle by
+    // setting `bundleModule.paths = [NATIVE_DIR/node_modules]`. A Worker
+    // thread gets its own module registry, so we point it at the same
+    // directory.
+    //
+    // We use NODE_PATH (via the worker's `env`) rather than patching
+    // Module.globalPaths inside the worker: NODE_PATH is applied by
+    // Node's own bootstrap before ANY module in the worker is loaded,
+    // so it works regardless of how the bundler orders the imports.
+    // Patching globalPaths from inside the worker body is unreliable
+    // because esbuild hoists `import` statements above the module body.
+    const nodeModulesDir = (() => {
+      try {
+        // Most precise: the SEA entry points at the per-machine dir.
+        if (process.env.SAG_NATIVE_CACHE_DIR) {
+          const fromEnv = path.join(process.env.SAG_NATIVE_CACHE_DIR, "node_modules");
+          if (existsSync(fromEnv)) return fromEnv;
+        }
+        // <exe>/native-cache/<hash>/__bundle__/sag.embedding-worker.cjs
+        //   -> <exe>/native-cache/<hash>/node_modules
+        const bundleDir = path.dirname(workerPath);
+        const baseDir = path.dirname(bundleDir);
+        const candidate = path.join(baseDir, "node_modules");
+        return existsSync(candidate) ? candidate : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+
+    const workerEnv = { ...process.env };
+    if (nodeModulesDir) {
+      const existing = workerEnv.NODE_PATH;
+      workerEnv.NODE_PATH = existing
+        ? `${nodeModulesDir}${path.delimiter}${existing}`
+        : nodeModulesDir;
+    }
+
+    const w = new Worker(workerPath, {
+      // `execArgv: []` keeps the worker from inheriting --inspect,
+      // which would try to bind the debug port twice.
+      execArgv: [],
+      env: workerEnv,
+    });
     workerInstance = w;
 
     let bootError: Error | null = null;
@@ -343,7 +446,8 @@ function ensureWorker(): Promise<void> {
     // debugging if we ever wire a structured postMessage signature.
     void ping;
     void initId;
-  });
+      })
+  );
   // Don't propagate rejection forever — clear so the next call retries.
   workerInitPromise.catch(() => {
     workerInitPromise = null;

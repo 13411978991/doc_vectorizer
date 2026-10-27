@@ -100,6 +100,38 @@ if (existsSync(NATIVE_CACHE)) {
   robocopy(NATIVE_CACHE, dstNC, sub);
 }
 
+// ── Runtime-dir sweep (any depth) ──────────────────────────────────
+// RUNTIME_TOP_LEVEL_DIRS above only guards the package ROOT. That is not
+// enough: the runtime database and logs live one level deeper, at
+// `resources/data/` and `resources/logs/`, so the top-level `resources/`
+// copy staged them wholesale. A 2026-10-23 pack shipped a 172 MB
+// in-progress `sag.db` (plus its -wal / -shm) and 10 MB of logs inside
+// the distribution zip.
+//
+// Stripping by robocopy `/XD` is NOT an option here — robocopy matches
+// the excluded name at ANY depth, and the previous version of this
+// script did exactly that, which silently deleted every
+// `node_modules/**/tests/data/*.js` the SEA backend then failed to
+// unpack (ENOENT at boot, see the manifest gate below). So we sweep the
+// staged tree by PATH PREFIX instead: only the real runtime dirs, which
+// are always direct children of the package root or of `resources/`.
+{
+  const RUNTIME_PREFIXES = [
+    join(STAGE, "data"),
+    join(STAGE, "logs"),
+    join(STAGE, ".tmp"),
+    join(STAGE, "resources", "data"),
+    join(STAGE, "resources", "logs"),
+    join(STAGE, "resources", ".tmp"),
+  ];
+  for (const p of RUNTIME_PREFIXES) {
+    if (existsSync(p)) {
+      rmSync(p, { recursive: true, force: true });
+      console.log(`  stripped runtime dir: ${relative(STAGE, p)}/`);
+    }
+  }
+}
+
 // ── Build-temp sweep ──────────────────────────────────────────────
 // pe-set-icon works by copying the exe aside, rewriting the copy, and
 // renaming it into place. Both build scripts used to forget the
@@ -173,6 +205,40 @@ import { readFileSync } from "node:fs";
     console.error("Rebuild the native-cache staging (build:sea-bundle / build:stdio-launcher) before packing.");
     process.exit(1);
   }
+}
+
+// ── Runtime-leak gate ─────────────────────────────────────────────
+// Belt-and-braces after the sweep above: refuse to ship if a real
+// database or log file is still staged. A distribution must always be
+// a CLEAN install — a recipient's first boot creates their own
+// `resources/data/sag.db`. Shipping ours would silently hand them a
+// copy of the build machine's knowledge base (and, on a
+// pre-populated manifest, make the watcher treat their files as
+// already-ingested).
+{
+  const leaks = [];
+  const RUNTIME_LEAK_PATTERNS = [
+    /[/\\]data[/\\].*\.db(-wal|-shm)?$/i,
+    /[/\\]logs[/\\].*\.log$/i,
+  ];
+  const scanLeak = (dir) => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, ent.name);
+      if (ent.isDirectory()) scanLeak(p);
+      else if (RUNTIME_LEAK_PATTERNS.some((re) => re.test(p))) {
+        leaks.push(`${relative(STAGE, p)} (${statSync(p).size} bytes)`);
+      }
+    }
+  };
+  scanLeak(STAGE);
+  if (leaks.length) {
+    console.error(`\npack aborted: ${leaks.length} runtime file(s) staged in the distribution:`);
+    for (const l of leaks.slice(0, 20)) console.error(`    - ${l}`);
+    if (leaks.length > 20) console.error(`    … and ${leaks.length - 20} more`);
+    console.error("A distribution zip must be a clean install. Check the runtime-dir sweep above.");
+    process.exit(1);
+  }
+  console.log("✓ runtime-leak gate: no database or log files staged");
 }
 
 console.log("\n--- staging summary ---");

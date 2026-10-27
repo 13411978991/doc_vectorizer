@@ -459,8 +459,19 @@ SAG_DATA_DIR=D:\sag-data
 本机已经有另一个 SAG 桌面版在跑（包括**另一个目录下的**）时，新实例会直接退出。
 这不是崩溃。
 
-**窗口空白、一直转圈** —— 首次启动要解压 300 MB 原生依赖，实测 **20–60 秒**。
-超过 120 秒报 `backend failed to become ready within 120000ms` 才是真问题。
+**窗口空白、一直转圈** —— 首次启动要在后台解压约 600 MB 原生依赖。
+界面本身 **几秒内就能打开**（服务器先起来，解包在后台跑）；本地嵌入模型
+在解包完一小批关键依赖后才可用，实测 **30 秒内**就绪；全部依赖解完约 **1–3 分钟**
+（期间界面照常可用，只是本地 embedding 的检索/同步会等它）。
+
+判断进度：看 `resources\native-cache\<12位哈希>\` 目录下的两个标记文件 ——
+
+| 标记文件 | 含义 |
+|---|---|
+| `.sag-unpack-embedding-ready` | 嵌入相关的依赖已就绪（检索/同步可以跑了） |
+| `.sag-unpack-complete` | 全部依赖解包完成 |
+
+超过 120 秒报 `backend failed to become ready within 120000ms`才是真问题。
 
 看日志：`<解压目录>\resources\logs\desktop-<时间戳>.log`
 
@@ -491,8 +502,8 @@ taskkill /F /PID <pid>
 | 日志片段 | 说明 |
 |---|---|
 | `Cannot load "@napi-rs/canvas"` | 无害。图像相关的可选依赖，功能不受影响 |
-| `embedding worker terminated: Cannot find module '@xenova/transformers'` | 回退到进程内 embedding，`embedding.loaded: true` 仍然正常 |
 | `[sag-mcp] migration warning: No such built-in module: better-sqlite3` | 无害。启动器里那次预迁移没跑成，但真正的迁移由 MCP 服务本体完成 —— 表结构齐全，工具照常可用 |
+| `embedding worker terminated: Cannot find module ...` | **不可忽略**（2026-10-27 之前的文档说无害是错的）。说明嵌入 worker 没能加载依赖，本地嵌入会停摆。先完全退出再启动一次；仍复现就看 `resources\native-cache\<哈希>\` 下有没有 `.sag-unpack-complete`，没有就把解压目录加杀软白名单后重启 |
 
 ### 9.7 想看实时日志
 
@@ -522,6 +533,19 @@ watcher 启动前会先探测 embedding 能不能用。**没配 embedding 就直
 
 > ⚠️ 出现这个错误时，文件夹记录**已经建在数据库里了**，只是 watcher 没起来。
 > 所以不用重新添加文件夹，配好 embedding 后直接重触发同步即可。
+
+### 9.9 重启后能登录但「同步情况」一直转圈（2026-10-27 已修复）
+
+旧版本在重启后有个竞态：后台解包没跑完，挂载点遗留的待同步文件就立刻开始嵌入，
+把主线程卡死，界面所有页面都加载不出来。当前版本已修：
+
+- 原生依赖解包改成**纯后台异步**，HTTP 服务秒级就绪；
+- 嵌入会**等解包的关键依赖就绪**才开始（最多等 15 分钟，超时也会放行）；
+- 嵌入 worker 文件固定从按内容哈希的目录加载，不再误用包内自带的那份
+  （那份旁边没有 node_modules，一加载就崩）。
+
+如果你仍在旧版本上遇到这个现象：完全退出 SAG（包括托盘），重新启动，
+等 1–3 分钟让后台解包跑完即可。升级到新包可根治。
 
 ---
 
