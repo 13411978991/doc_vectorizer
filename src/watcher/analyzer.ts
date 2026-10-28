@@ -4,7 +4,7 @@ import path from "node:path";
 import pLimit from "p-limit";
 import { config } from "../config/env.js";
 import { logger } from "../observability/logger.js";
-import { DEFAULT_SUPPORTED_EXTENSIONS, type WatchedFolderRecord } from "./types.js";
+import { DEFAULT_SUPPORTED_EXTENSIONS, type ManifestStatus, type WatchedFolderRecord } from "./types.js";
 import { shouldIncludeFile } from "./filetype-filter.js";
 import { isExcludedDirName } from "./scan-exclusions.js";
 import { getRuntimePerformanceSettings } from "../services/performance-settings-service.js";
@@ -48,6 +48,10 @@ export interface ExistingManifestEntry {
   inode?: number | null;
   sizeBytes?: number | null;
   sha1?: string | null;
+  // Present when the caller loaded full FileManifestRecords (the
+  // orchestrator does). Used by the mtime backfill to preserve the
+  // row's status instead of resetting it to the upsert default.
+  status?: string;
 }
 
 /**
@@ -175,6 +179,15 @@ async function enumerateFiles(
           continue;
         }
         out.push({ absPath: abs, relPath });
+        // Progress visibility for whole-drive scans: without a periodic
+        // line, a 97k-directory walk sits silent for tens of minutes and
+        // the UI looks stuck at "扫描文件系统" (2026-10-28).
+        if (out.length % 2000 === 0) {
+          logger.info(
+            { root, files: out.length, dirs: seen.size, skippedDirs },
+            "watcher: scan walking…"
+          );
+        }
       }
     }
   };
@@ -241,6 +254,7 @@ export async function scanFolder(
   const onDisk = await enumerateFiles(root, folder.recursive, (relPath) =>
     shouldIncludeFile(relPath, effectiveFilter).include
   );
+  logger.info({ root, candidates: onDisk.length }, "watcher: scan enumeration done, diffing against manifest");
 
   const existingByPath = new Map<string, ExistingManifestEntry>();
   for (const entry of existing) {
@@ -249,6 +263,14 @@ export async function scanFolder(
 
   const seenOnDisk = new Set<string>();
   const result: ScanResult = { added: [], updated: [], deleted: [] };
+  // Rows whose stored hash we could only verify by re-reading the file
+  // because their manifest row predates the mtime_ms column (migration
+  // 021). When the fresh hash matches the stored one the file is
+  // unchanged, so we persist the stat'd mtime to make the NEXT scan
+  // skip the read entirely. One-time cost per legacy row.
+  const mtimeBackfill: { entry: FileEntry; prev: ExistingManifestEntry }[] = [];
+  let mtimeSkips = 0;
+  let hashed = 0;
 
   // Hash every file in parallel up to SCAN_CONCURRENCY at a time. We
   // materialise entries in the same order we received them so the
@@ -296,13 +318,61 @@ export async function scanFolder(
             sizeBytes: stat.size
           };
         }
+        // Fast path (migration 021): when the manifest row already
+        // carries a hash AND its size+mtime still match the file on
+        // disk, the content is unchanged — reuse the stored SHA-1 and
+        // skip re-reading the whole file. Before mtime was persisted
+        // every scan SHA-1-read every whitelisted file; on a
+        // drive-root watch (E:\ ≈ 7k Office files, tens of GB) that
+        // made every startup scan a 30-40 minute event-loop-starving
+        // grind. mtime is not a perfect change detector (a hostile or
+        // buggy writer could preserve it), but it is the standard
+        // sync-tool shortcut, and chokidar still live-watches for
+        // changes while the app is running.
+        const statMs = Math.trunc(stat.mtimeMs);
+        const prev = existingByPath.get(file.relPath);
+        if (
+          prev &&
+          prev.sha1 != null &&
+          prev.mtimeMs != null &&
+          prev.sizeBytes != null &&
+          prev.mtimeMs === statMs &&
+          prev.sizeBytes === stat.size
+        ) {
+          mtimeSkips++;
+          return {
+            relPath: file.relPath,
+            absPath: file.absPath,
+            mtimeMs: statMs,
+            inode: Number.isFinite(stat.ino) ? Number(stat.ino) : 0,
+            sizeBytes: stat.size,
+            sha1: prev.sha1
+          } as FileEntry;
+        }
         try {
           const sha1 = await computeSha1(file.absPath);
+          hashed++;
+          if (prev && prev.sha1 != null && prev.sha1 === sha1 && prev.mtimeMs == null) {
+            // Legacy row without mtime: the file is unchanged, so we
+            // can safely stamp the stat'd mtime onto the manifest row
+            // and make every future scan take the fast path above.
+            mtimeBackfill.push({
+              prev,
+              entry: {
+                relPath: file.relPath,
+                absPath: file.absPath,
+                mtimeMs: statMs,
+                inode: Number.isFinite(stat.ino) ? Number(stat.ino) : 0,
+                sizeBytes: stat.size,
+                sha1
+              }
+            });
+          }
           const inode = Number.isFinite(stat.ino) ? Number(stat.ino) : 0;
           return {
             relPath: file.relPath,
             absPath: file.absPath,
-            mtimeMs: Math.trunc(stat.mtimeMs),
+            mtimeMs: statMs,
             inode,
             sizeBytes: stat.size,
             sha1
@@ -353,6 +423,45 @@ export async function scanFolder(
       result.updated.push(entry);
     }
   }
+
+  // Backfill mtime onto legacy manifest rows (written before migration
+  // 021) whose content we just verified as unchanged. Best-effort: a
+  // failure here only means the next scan re-reads that file once more.
+  if (mtimeBackfill.length > 0) {
+    try {
+      const { upsertManifest } = await import("./manifest-store.js");
+      for (const { entry, prev } of mtimeBackfill) {
+        try {
+          await upsertManifest({
+            folderId: folder.id,
+            relPath: entry.relPath,
+            mtimeMs: entry.mtimeMs,
+            sizeBytes: entry.sizeBytes,
+            sha1: entry.sha1,
+            status: (prev.status as ManifestStatus | undefined) ?? "synced"
+          });
+        } catch (error) {
+          logger.warn(
+            { relPath: entry.relPath, error: (error as Error).message },
+            "watcher: mtime backfill failed for row (non-fatal)"
+          );
+        }
+      }
+    } catch (error) {
+      logger.warn({ error: (error as Error).message }, "watcher: mtime backfill unavailable (non-fatal)");
+    }
+  }
+
+  logger.info(
+    {
+      root,
+      candidates: onDisk.length,
+      hashed,
+      mtimeSkips,
+      mtimeBackfilled: mtimeBackfill.length
+    },
+    "watcher: scan file diff done"
+  );
 
   // Anything that was in the manifest but not on disk has been deleted.
   //

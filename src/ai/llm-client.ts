@@ -111,18 +111,30 @@ export class OpenAICompatibleLlmClient implements LlmClient {
         });
         return localNamedEntities(query);
       }
+      if (remoteLlmBreakerOpen()) {
+        // Endpoint known-down (ingest already tripped the breaker) —
+        // don't hang the user's search for the full watchdog timeout.
+        log.degrade({
+          reason: "remote-llm-circuit-open",
+          response: [],
+          details: { fallback: "regex-ner" }
+        });
+        return localNamedEntities(query);
+      }
       try {
         const result = await this.chatJson(settings, {
           operation: "extractNamedEntities.api",
           system: "Extract named entities important for answering the question. Return JSON only.",
           user: JSON.stringify({ question: query, schema: { named_entities: ["string"] } })
         });
+        remoteLlmBreakerSuccess();
         const entities = Array.isArray(result.named_entities) ? result.named_entities : result.entities;
         const list = Array.isArray(entities) ? entities.map(String).filter(Boolean) : [];
         log.succeed({ named_entities: list, source: "remote-llm" });
         return list;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        remoteLlmBreakerFailure(message);
         logger.warn({ err: message }, "extractNamedEntities: remote LLM failed, falling back to regex");
         log.degrade({
           reason: "remote-llm-failed",
@@ -213,11 +225,25 @@ export class OpenAICompatibleLlmClient implements LlmClient {
         });
         return this.runRegexFallback(input, "misconfigured → regex");
       }
+      if (remoteLlmBreakerOpen()) {
+        // Endpoint has failed repeatedly in the last few minutes —
+        // don't let every chunk burn the full watchdog timeout.
+        log.degrade({
+          reason: "remote-llm-circuit-open",
+          response: [],
+          details: { fallback: "regex", consecutiveFailures: _remoteLlmBreaker.consecutiveFailures }
+        });
+        return this.runRegexFallback(input, "llm circuit open → regex");
+      }
       try {
         const result = await this.chatJson(settings, {
           operation: "extractEventsFromChunk.api",
           messages: buildBenchmarkExtractionMessages(input)
         });
+        // The endpoint answered — any shape of answer counts as
+        // "reachable", so the breaker resets here even if the payload
+        // later turns out empty.
+        remoteLlmBreakerSuccess();
         const items = Array.isArray(result.items) ? result.items : result.data?.items;
         const inputIsChinese = isMostlyChinese(input.content);
         if (!Array.isArray(items) || items.length === 0) {
@@ -283,6 +309,7 @@ export class OpenAICompatibleLlmClient implements LlmClient {
         return out;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        remoteLlmBreakerFailure(message);
         logger.warn(
           { err: message, heading: input.heading, title: input.title },
           "extractEventsFromChunk: remote LLM failed, falling back to regex"
@@ -533,6 +560,61 @@ let _nerCircuitBrokenFor:
 // of times. Reset to null on a fresh error so a new NER-model
 // path / error reason still produces a single visible warning.
 let _lastNerBreakerError: string | null = null;
+
+// ── Remote-LLM circuit breaker (ingest hot path) ───────────────────
+// When the remote endpoint is unreachable (VPN / corporate gateway
+// flap, DNS hiccup, service down), EVERY chunk would otherwise hang up
+// to llmTimeoutMs (default 180s) before falling back to regex. A
+// 2,295-chunk workbook at concurrency 4 turns that into a ~28-hour
+// death march (observed 2026-10-28: the log filled with
+// "llm-watchdog-timeout-180000ms" for hours while ingest barely
+// moved). After a few consecutive failures we open the breaker for a
+// cooldown: chunks go straight to the regex fallback. Once the
+// cooldown elapses the next call is a half-open trial — success closes
+// the breaker, failure re-opens it for another cooldown.
+const REMOTE_LLM_BREAKER_FAILURES_TO_OPEN = 3;
+const REMOTE_LLM_BREAKER_COOLDOWN_MS = 5 * 60_000;
+let _remoteLlmBreaker = { consecutiveFailures: 0, openUntil: 0 };
+
+function remoteLlmBreakerOpen(): boolean {
+  if (_remoteLlmBreaker.openUntil === 0) return false;
+  if (Date.now() >= _remoteLlmBreaker.openUntil) {
+    // Cooldown elapsed → half-open: allow trial calls again. The
+    // failure counter stays where it is, so a single failed trial
+    // immediately re-opens the breaker.
+    _remoteLlmBreaker.openUntil = 0;
+    return false;
+  }
+  return true;
+}
+
+function remoteLlmBreakerSuccess(): void {
+  if (_remoteLlmBreaker.consecutiveFailures > 0) {
+    logger.info(
+      { previousFailures: _remoteLlmBreaker.consecutiveFailures },
+      "remote LLM reachable again — circuit closed"
+    );
+  }
+  _remoteLlmBreaker = { consecutiveFailures: 0, openUntil: 0 };
+}
+
+function remoteLlmBreakerFailure(message: string): void {
+  _remoteLlmBreaker.consecutiveFailures++;
+  if (
+    _remoteLlmBreaker.consecutiveFailures >= REMOTE_LLM_BREAKER_FAILURES_TO_OPEN &&
+    _remoteLlmBreaker.openUntil === 0
+  ) {
+    _remoteLlmBreaker.openUntil = Date.now() + REMOTE_LLM_BREAKER_COOLDOWN_MS;
+    logger.warn(
+      {
+        consecutiveFailures: _remoteLlmBreaker.consecutiveFailures,
+        cooldownMs: REMOTE_LLM_BREAKER_COOLDOWN_MS,
+        lastError: message
+      },
+      "remote LLM circuit OPEN — chunks go straight to regex fallback until the cooldown elapses"
+    );
+  }
+}
 
 function _nerCacheKey(modelPath: string, maxTokens: number, aggregation: string): string {
   return `${modelPath}|${maxTokens}|${aggregation}`;

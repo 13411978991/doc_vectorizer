@@ -85,9 +85,11 @@ function manifestFromRow(row: Record<string, unknown>): FileManifestRecord {
   // SQLite schema (watched_folder_manifests) is intentionally simple:
   // folder_id + rel_path (composite PK), document_id, last_seen_at,
   // last_event, size, hash, last_error, last_sync_started_at,
-  // last_sync_duration_ms. Fields the PG schema had (mtimeMs, inode,
-  // status, lastSyncedAt, lastError, createdAt, updatedAt) are derived
-  // or null in the in-memory shape so callers don't have to change.
+  // last_sync_duration_ms, mtime_ms (added by migration 021 so scans
+  // can skip the SHA-1 read when size+mtime are unchanged). Fields
+  // the PG schema had (inode, status, lastSyncedAt, lastError,
+  // createdAt, updatedAt) are derived or null in the in-memory shape
+  // so callers don't have to change.
   const lastSeen = row.last_seen_at;
   const lastSeenIso = lastSeen == null ? null : toLocalISO(parseSqliteTimestamp(String(lastSeen)));
   // last_sync_started_at is a SQLite TIMESTAMP (no timezone). Coerce
@@ -106,7 +108,7 @@ function manifestFromRow(row: Record<string, unknown>): FileManifestRecord {
     id: `${row.folder_id}::${row.rel_path}`,
     folderId: String(row.folder_id),
     relPath: String(row.rel_path),
-    mtimeMs: null,
+    mtimeMs: row.mtime_ms == null ? null : Number(row.mtime_ms),
     inode: null,
     sizeBytes: row.size == null ? null : Number(row.size),
     sha1: row.hash == null ? null : String(row.hash),
@@ -908,13 +910,19 @@ export async function upsertManifest(input: UpsertManifestInput): Promise<FileMa
   const lastSyncDurationMsValue = timingProvided
     ? normalizeDurationMs(input.lastSyncDurationMs ?? null)
     : null;
+  // mtime_ms follows the same flag pattern: a caller that never
+  // mentions mtime (e.g. markFailed) must not clobber the stored
+  // value; a caller that knows the current mtime (scan/orchestrator)
+  // persists it so the next scan can skip the SHA-1 read.
+  const mtimeProvided = input.mtimeMs !== undefined;
+  const mtimeValue = mtimeProvided ? (input.mtimeMs ?? null) : null;
   const result = await pool.query(
     `
       insert into watched_folder_manifests (
         folder_id, rel_path, document_id, last_seen_at, last_event, size, hash, last_error,
-        last_sync_started_at, last_sync_duration_ms
+        last_sync_started_at, last_sync_duration_ms, mtime_ms
       )
-      values ($1, $2, $3, current_timestamp, $4, $5, $6, $7, $8, $9)
+      values ($1, $2, $3, current_timestamp, $4, $5, $6, $7, $8, $9, $12)
       on conflict (folder_id, rel_path) do update set
         document_id = coalesce(excluded.document_id, watched_folder_manifests.document_id),
         last_seen_at = current_timestamp,
@@ -932,6 +940,10 @@ export async function upsertManifest(input: UpsertManifestInput): Promise<FileMa
         last_sync_duration_ms = case
           when $11::boolean then $9
           else watched_folder_manifests.last_sync_duration_ms
+        end,
+        mtime_ms = case
+          when $13::boolean then $12
+          else watched_folder_manifests.mtime_ms
         end
       returning *
     `,
@@ -948,7 +960,11 @@ export async function upsertManifest(input: UpsertManifestInput): Promise<FileMa
       // $10 — flag controlling the last_error update branch above.
       errorProvided,
       // $11 — flag controlling the timing update branches above.
-      timingProvided
+      timingProvided,
+      // $12 — mtime value (null when the caller didn't provide one).
+      mtimeValue,
+      // $13 — flag controlling the mtime_ms update branch above.
+      mtimeProvided
     ]
   );
   return manifestFromRow(result.rows[0]);
