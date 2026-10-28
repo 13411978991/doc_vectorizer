@@ -203,6 +203,39 @@ export class IngestionService {
       totalChunks: chunking.chunks.length
     });
 
+    // Event extraction (LLM) runs CONCURRENTLY with the embedding
+    // stages — it only needs the chunk TEXT, never the vectors.
+    //
+    // Serialising them was a trap: a big workbook produced 2,295
+    // chunks, and the (single-threaded) embedding stage needed ~97
+    // minutes. The LLM calls therefore started 1.5 hours late, the
+    // operator saw "no traffic to the LLM API" for the whole run, and
+    // pausing the folder in the meantime aborted the ingest right
+    // before eventPrep — so the extraction never ran at all. Running
+    // the two in parallel means the LLM sees traffic within seconds
+    // and the wall-clock cost becomes max(embedding, extraction)
+    // instead of embedding + extraction.
+    let eventPrepPromise: Promise<{ preparedEvents: PreparedEvent[]; failedChunks: number }> | null = null;
+    let eventPrepTimer: ReturnType<typeof stageTimer> | null = null;
+    if (extract && chunking.chunks.length > 0) {
+      // Bail BEFORE paying for the LLM if the user just paused.
+      if (input.signal?.aborted) {
+        throw new IngestAbortError("ingest aborted before eventPrep");
+      }
+      eventPrepTimer = stageTimer("eventPrep");
+      eventPrepPromise = this.prepareEvents({
+        input,
+        chunks: chunking.chunks,
+        onProgress,
+        concurrency: ingestConcurrency,
+        signal: input.signal
+      });
+      // If the embedding stage throws first, this promise would be
+      // left unhandled → attach a sink so Node doesn't report an
+      // unhandled rejection. The real result is awaited below.
+      eventPrepPromise.catch(() => undefined);
+    }
+
     onProgress?.({
       stage: "EMBEDDING_CHUNKS",
       message: "正在生成切片向量",
@@ -237,23 +270,22 @@ export class IngestionService {
     );
 
     let eventPrepResult: { preparedEvents: PreparedEvent[]; failedChunks: number } = { preparedEvents: [], failedChunks: 0 };
-    if (extract) {
-      // Abort check between embedding and event prep. Event prep kicks
-      // off an LLM call (or local-rule fallback) that takes several
-      // seconds for a typical file — we want to bail before paying for
-      // it if the user just paused the folder.
-      if (input.signal?.aborted) {
-        throw new IngestAbortError("ingest aborted before eventPrep");
+    if (eventPrepPromise) {
+      try {
+        eventPrepResult = await eventPrepPromise;
+      } catch (error) {
+        // An abort must still abort the whole ingest.
+        if (error instanceof IngestAbortError) throw error;
+        logger.warn(
+          { error: (error as Error).message },
+          "ingest: event preparation failed — continuing without events"
+        );
       }
-      const prepTimer = stageTimer("eventPrep");
-      eventPrepResult = await this.prepareEvents({
-        input,
-        chunks: chunking.chunks,
-        onProgress,
-        concurrency: ingestConcurrency,
-        signal: input.signal
-      });
-      stageResults.push(prepTimer.stop({ events: eventPrepResult.preparedEvents.length }));
+      if (eventPrepTimer) {
+        stageResults.push(
+          eventPrepTimer.stop({ events: eventPrepResult.preparedEvents.length })
+        );
+      }
     }
     const preparedEvents = eventPrepResult.preparedEvents;
     const failedChunkCount = eventPrepResult.failedChunks;

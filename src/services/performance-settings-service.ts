@@ -45,7 +45,7 @@ export type PerformanceProfile = "low" | "balanced" | "aggressive";
 export interface PerformanceSettings {
   profile: PerformanceProfile;
   /** Parallel files inside a single watched folder ingest pipeline.
-   *  Range 1-10. env INGEST_CONCURRENCY default 1. */
+   *  Range 1-10. env INGEST_CONCURRENCY default 4. */
   ingestConcurrency: number;
   /** Parallel sub-batches inside one file's batchGenerate call.
    *  Range 1-10. env EMBEDDING_BATCH_CONCURRENCY default 5. */

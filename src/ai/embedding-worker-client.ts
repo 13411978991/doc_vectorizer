@@ -25,6 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logger } from "../observability/logger.js";
 import { waitForNativeCacheReady } from "./native-cache-ready.js";
+import { config } from "../config/env.js";
 import * as esbuild from "esbuild";
 
 type Pending = {
@@ -468,20 +469,35 @@ async function sendRequest<T extends WorkerResponse>(
       reject
     });
     workerInstance!.postMessage({ ...fields, op, id });
-    // Per-request timeout (10 minutes). ONNX forward pass on CPU is
-    // ~10-50ms per chunk; a 10-min ceiling catches true hangs.
+    // Per-request timeout. The worker embeds one ONNX forward at a
+    // time; a single request now carries at most
+    // EMBEDDING_WORKER_REQUEST_BATCH texts (default 64 → ~3 min on a
+    // modest CPU). The old 10-minute ceiling was fine for a single
+    // chunk but a whole-workbook batch (2,295 chunks → 97 min) blew
+    // through it, and the caller then fell back to in-process ONNX on
+    // the main thread — which froze the HTTP layer for the duration.
+    const timeoutMs = config.EMBEDDING_WORKER_TIMEOUT_MS;
     setTimeout(() => {
       if (pending.has(id)) {
         pending.delete(id);
-        reject(new Error(`embedding worker request ${id} timed out after 10min`));
+        reject(new Error(`embedding worker request ${id} timed out after ${Math.round(timeoutMs / 1000)}s`));
       }
-    }, 600_000).unref();
+    }, timeoutMs).unref();
   });
 }
 
 /**
  * Embed a batch of texts via the worker. The main thread blocks
  * only on `postMessage`/`structuredClone`, never on ONNX forward.
+ *
+ * The texts are sent in chunks of EMBEDDING_WORKER_REQUEST_BATCH.
+ * One request carrying every chunk of a big workbook is a trap: the
+ * worker embeds one ONNX forward at a time (~2.5 s per chunk on a
+ * modest CPU), so a 2,295-chunk workbook needs ~97 minutes — far past
+ * the per-request timeout, which made the caller fall back to
+ * IN-PROCESS ONNX on the main thread and freeze the whole HTTP layer
+ * for the duration. Splitting keeps every request short and the main
+ * thread responsive.
  */
 export async function localBgeEmbeddingViaWorker(
   modelPath: string,
@@ -489,17 +505,40 @@ export async function localBgeEmbeddingViaWorker(
   dimensions: number
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
-  const resp = await sendRequest<{
-    id: string;
-    op: "embed";
-    ok: true;
-    vectors: number[][];
-  }>("embed", {
-    modelPath,
-    texts,
-    dimensions
-  });
-  return resp.vectors;
+  const batchSize = Math.max(1, config.EMBEDDING_WORKER_REQUEST_BATCH);
+  if (texts.length <= batchSize) {
+    const resp = await sendRequest<{
+      id: string;
+      op: "embed";
+      ok: true;
+      vectors: number[][];
+    }>("embed", {
+      modelPath,
+      texts,
+      dimensions
+    });
+    return resp.vectors;
+  }
+  const out: number[][] = [];
+  for (let off = 0; off < texts.length; off += batchSize) {
+    const slice = texts.slice(off, off + batchSize);
+    const resp = await sendRequest<{
+      id: string;
+      op: "embed";
+      ok: true;
+      vectors: number[][];
+    }>("embed", {
+      modelPath,
+      texts: slice,
+      dimensions
+    });
+    out.push(...resp.vectors);
+    logger.info(
+      { done: out.length, total: texts.length, batchSize: slice.length },
+      "embedding-worker: batch sent"
+    );
+  }
+  return out;
 }
 
 /**

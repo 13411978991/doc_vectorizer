@@ -126,12 +126,28 @@ const envSchema = z.object({
   // in series is the only stable configuration. If a future caller
   // needs more parallelism, they should isolate per-file work into
   // worker_threads rather than bumping this number.
-  INGEST_CONCURRENCY: z.coerce.number().int().positive().max(20).default(1),
+  INGEST_CONCURRENCY: z.coerce.number().int().positive().max(20).default(4),
   // How many sub-batches inside a single file's batchGenerate run in
   // parallel. The chunker splits one long file into ~5-15 batches of
   // ~3500 tokens each; the old serial loop waited ~12 s for a 60 KB
   // xlsx. With concurrency=3, the same file lands in ~3 s. Default 3.
   EMBEDDING_BATCH_CONCURRENCY: z.coerce.number().int().positive().max(20).default(5),
+  // How many texts are sent to the embedding worker in ONE request.
+  //
+  // Why this exists (2026-10-27): a big workbook produced 2,295 chunks
+  // in a single batchGenerate call. The worker embeds them one ONNX
+  // forward at a time (~2.5 s each on this box) → 97 minutes for the
+  // batch, but the client's per-request timeout was 10 minutes → the
+  // request TIMED OUT and the caller fell back to in-process ONNX on
+  // the MAIN thread, which froze the whole HTTP layer (health 1.2-7 s,
+  // LLM probe 12 s) and starved the LLM extraction stage that runs
+  // after it. Splitting the request into 64-text chunks keeps every
+  // request far below any timeout and keeps the main thread free.
+  EMBEDDING_WORKER_REQUEST_BATCH: z.coerce.number().int().positive().max(512).default(64),
+  // Per-request timeout for a single embedding-worker request. With the
+  // request split above, 64 texts take ~3 minutes; 30 minutes is a
+  // generous safety net for slow CPUs / huge models.
+  EMBEDDING_WORKER_TIMEOUT_MS: z.coerce.number().int().positive().max(3_600_000).default(1_800_000),
   // ─── Large-file optimisation knobs ─────────────────────────────────────
   // Global hard cap on a single ingest file's size. Files above this
   // are skipped during ingest (recorded as "skipped: exceeds maxBytes").
