@@ -160,40 +160,75 @@ function waitForEffectivePort(timeoutMs = 30000) {
  *       squatting on the port. Refuse to start (avoid clobbering an
  *       unrelated service the user actually wants to keep).
  *
- * Returns the action we should take: "spawn", "reuse", or "abort".
+ * Returns the action we should take: "spawn", "reuse", "wedged", or
+ * "abort".
  */
 async function probeBackendPort() {
   const url = `${sagUrl()}/health`;
-  logLine(logStream, "[main]", `probe: ${url}`);
-  try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(2000) });
-    if (r.ok) {
-      let body = null;
-      try {
-        body = await r.json();
-      } catch {
-        /* not JSON — still ok */
+  // A single 2 s probe is too fragile: on a busy machine (e.g. an
+  // existing backend mid-ingest doing CPU-bound ONNX work) a healthy
+  // backend can miss the window, and misreading that as "port free"
+  // made us SPAWN A DUPLICATE backend — two ~97-minute ONNX ingest
+  // jobs on one box, the new one port-hopping to 4174 while the old
+  // one held 4173 (2026-10-28 incident: with the CPU saturated the
+  // window's first loadURL then died with ERR_FAILED and the app
+  // became an invisible zombie that swallowed every relaunch via the
+  // single-instance lock).
+  //
+  // Distinguish the failure modes:
+  //   ECONNREFUSED   → nothing is listening → safe to spawn right away.
+  //   timeout / else → SOMETHING is holding the port but not answering
+  //                    → retry a few times; if it never answers, call
+  //                    it "wedged" and let the caller tell the user to
+  //                    kill the stale process — never spawn a duplicate.
+  const ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    logLine(logStream, "[main]", `probe: ${url} (attempt ${attempt}/${ATTEMPTS})`);
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
+      if (r.ok) {
+        let body = null;
+        try {
+          body = await r.json();
+        } catch {
+          /* not JSON — still ok */
+        }
+        // The SAG /health endpoint returns either `{status:"ok"}` (older)
+        // or `{ok:true, sag:{...}}` (newer). Either is fine; the only
+        // rejection criterion is a 200 that's not from us. We can't
+        // 100% fingerprint the response, but the SAG server always
+        // returns JSON. A non-JSON 200 is something else on the port.
+        if (body && typeof body === "object") {
+          logLine(logStream, "[main]", `probe: reuse existing backend at ${url}`);
+          return "reuse";
+        }
+        logLine(logStream, "[main]", `probe: 200 but non-JSON, treating as foreign`);
+        return "abort";
       }
-      // The SAG /health endpoint returns either `{status:"ok"}` (older)
-      // or `{ok:true, sag:{...}}` (newer). Either is fine; the only
-      // rejection criterion is a 200 that's not from us. We can't
-      // 100% fingerprint the response, but the SAG server always
-      // returns JSON. A non-JSON 200 is something else on the port.
-      if (body && typeof body === "object") {
-        logLine(logStream, "[main]", `probe: reuse existing backend at ${url}`);
-        return "reuse";
-      }
-      logLine(logStream, "[main]", `probe: 200 but non-JSON, treating as foreign`);
+      // 5xx etc — assume foreign
+      logLine(logStream, "[main]", `probe: ${url} returned ${r.status}, treating as foreign`);
       return "abort";
+    } catch (err) {
+      // Node fetch (undici) reports connection failures as
+      // `TypeError: fetch failed` with the real reason on err.cause.code;
+      // a timeout surfaces as TimeoutError/AbortError instead.
+      const code = err && err.cause && err.cause.code;
+      if (code === "ECONNREFUSED" || code === "ECONNRESET") {
+        logLine(logStream, "[main]", `probe: ${url} refused (${code}) — port free`);
+        return "spawn";
+      }
+      logLine(
+        logStream,
+        "[main]",
+        `probe: ${url} no answer (${err.name || ""}: ${err.message ?? err}) — something is listening but busy`
+      );
+      if (attempt < ATTEMPTS) {
+        await new Promise((res) => setTimeout(res, 1500));
+      }
     }
-    // 5xx etc — assume foreign
-    logLine(logStream, "[main]", `probe: ${url} returned ${r.status}, treating as foreign`);
-    return "abort";
-  } catch (err) {
-    // ECONNREFUSED or timeout → port closed (or wedged), safe to spawn
-    logLine(logStream, "[main]", `probe: ${url} failed (${err.message ?? err}) — port free`);
-    return "spawn";
   }
+  logLine(logStream, "[main]", `probe: ${url} never answered after ${ATTEMPTS} attempts — wedged`);
+  return "wedged";
 }
 
 function startSagBackend() {
@@ -354,18 +389,55 @@ function createMainWindow() {
   });
 
   win.once("ready-to-show", () => win.show());
-  win.loadURL(sagUrl()).catch((err) => {
-    logLine(logStream, "[main]", `failed to loadURL(${sagUrl()}): ${err}`);
-    dialog.showErrorBox(
-      "无法加载 SAG 界面",
-      `后端已就绪但 Electron 窗口加载失败：${err.message}\n\n请查看日志：\n${logFile}`
-    );
-  });
+  // loadURL gets multiple chances: right after a cold boot the box can
+  // be saturated (backend SEA unpack + AV scanning the freshly
+  // extracted tree + an existing ingest run), and Chromium's first
+  // navigation can then die with a generic ERR_FAILED even though the
+  // backend is healthy. A one-shot failure used to leave an INVISIBLE
+  // ZOMBIE app: ready-to-show never fired so the window never
+  // appeared, and the single-instance lock turned every subsequent
+  // double-click into a no-op — "死活没运行起来" (2026-10-28). Retry a
+  // few times, then fail loudly AND quit so the next launch is a real
+  // fresh start instead of a handoff to the zombie.
+  void loadUrlWithRetry(win);
   win.on("closed", () => {
     mainWindow = null;
   });
   mainWindow = win;
   return win;
+}
+
+async function loadUrlWithRetry(win) {
+  const ATTEMPTS = 5;
+  const RETRY_DELAY_MS = 10_000;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    if (win.isDestroyed()) return;
+    const url = sagUrl();
+    try {
+      await win.loadURL(url);
+      if (attempt > 1) {
+        logLine(logStream, "[main]", `loadURL(${url}) succeeded on attempt ${attempt}`);
+      }
+      return;
+    } catch (err) {
+      lastErr = err;
+      logLine(logStream, "[main]", `failed to loadURL(${url}) attempt ${attempt}/${ATTEMPTS}: ${err}`);
+      if (attempt < ATTEMPTS) {
+        await new Promise((res) => setTimeout(res, RETRY_DELAY_MS));
+      }
+    }
+  }
+  const url = sagUrl();
+  dialog.showErrorBox(
+    "无法加载 SAG 界面",
+    `后端已就绪但 Electron 窗口多次加载失败：${lastErr && lastErr.message}\n\n` +
+      `可以先用浏览器打开 ${url} 验证后端是否正常。\n\n请查看日志：\n${logFile}`
+  );
+  // Quit instead of lingering windowless while holding the
+  // single-instance lock. before-quit kills our spawned backend
+  // child, so the next double-click gets a genuinely fresh start.
+  app.quit();
 }
 
 // IPC handlers exposed to the renderer via preload.js.
@@ -428,6 +500,24 @@ if (!gotLock) {
         "端口被占用",
         `端口 ${HTTP_PORT} 已被其他进程占用，但响应不像 SAG-backend。\n\n` +
           `请关闭占用该端口的程序后重新启动 SAG。\n\n` +
+          `日志：${logFile}`
+      );
+      app.quit();
+      return;
+    }
+    if (probe === "wedged") {
+      // Something holds the port but won't answer /health. Usually a
+      // leftover SAG-backend.exe whose event loop is wedged, or an old
+      // version still busy with a long ingest. Spawning anyway would
+      // make the new backend port-hop and run TWO CPU-heavy instances
+      // at once — the exact mess we refuse to repeat.
+      logLine(logStream, "[main]", `port ${HTTP_PORT} is wedged (listening but not answering)`);
+      dialog.showErrorBox(
+        "端口被占用且无响应",
+        `端口 ${HTTP_PORT} 上有进程在监听，但多次探测 /health 都没有回应。\n\n` +
+          `通常是还残留着一个旧的 SAG-backend.exe（可能正在跑大批量入库）。\n` +
+          `请在任务管理器里结束所有 SAG-backend.exe 后重新启动；\n` +
+          `如果你知道那是正在运行的旧版本，也可以等它闲下来再试。\n\n` +
           `日志：${logFile}`
       );
       app.quit();
