@@ -1184,7 +1184,7 @@ async function stepWorkerBundle() {
   // ingested document, visible in the log as a repeating warning).
   const dbWriteOut = join(DIST, "sag.db-write-worker.cjs");
   await build({
-    entryPoints: [join(ROOT, "src/workers/db-write-worker-entry.ts")],
+    entryPoints: [join(ROOT, "src/workers/db-write-worker-thread-entry.ts")],
     bundle: true,
     platform: "node",
     target: "node22",
@@ -1200,7 +1200,7 @@ async function stepWorkerBundle() {
     logLevel: "warning",
     banner: {
       js: [
-        "// SAG db-write-worker — runs as a child process, keeps bulk",
+        "// SAG db-write-worker — runs in a worker_thread, keeps bulk",
         "// SQLite writes off the main thread. Spawned by",
         "// src/services/db-write-worker-pool.ts.",
         'var import_meta_url = require("url").pathToFileURL(__filename).href;'

@@ -32,10 +32,10 @@
  */
 
 import { spawn, ChildProcessByStdio } from "node:child_process";
-import { resolve as resolvePath, join } from "node:path";
+import { Worker } from "node:worker_threads";
+import { resolve as resolvePath, join, dirname, delimiter } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { logger } from "../observability/logger.js";
@@ -95,6 +95,12 @@ type Pending = {
 
 class DbWriteWorkerPool {
   private proc: ChildProcessByStdio<null, null, null> | null = null;
+  // Packaged builds run the worker in a worker_THREAD: the SEA host has
+  // no separate node.exe, so spawning a child process would boot a
+  // second backend instead of the worker (2026-10-29: every batch timed
+  // out after 60 s and ingestion failed with HTTP 500). Dev mode keeps
+  // the child-process transport because tsx only transpiles .ts files.
+  private thread: Worker | null = null;
   private readonly pending = new Map<string, Pending>();
   private stdoutBuf = "";
   private stderrBuf = "";
@@ -162,9 +168,13 @@ class DbWriteWorkerPool {
           try { this.proc.kill(); } catch { /* ignore */ }
           this.proc = null;
         }
+        if (this.thread) {
+          try { void this.thread.terminate(); } catch { /* ignore */ }
+          this.thread = null;
+        }
       }
 
-      if (this.proc && this.status.mode === "worker") {
+      if ((this.proc || this.thread) && this.status.mode === "worker") {
         // Single round-trip: send the whole batch, get all results back
         // in one response. The worker runs them in one transaction.
         const id = randomUUID();
@@ -276,6 +286,17 @@ class DbWriteWorkerPool {
    * through silently. The next batch will simply restart the worker.
    */
   private sendAbortToWorker(signal: AbortSignal): void {
+    // Thread transport: post the in-band cancel op.
+    if (this.thread) {
+      try {
+        this.thread.postMessage({ id: randomUUID(), op: "cancel" });
+      } catch {
+        // The thread may already be gone; the in-flight batch op will
+        // fail on its own.
+      }
+      void signal;
+      return;
+    }
     if (!this.proc) return;
     // In-band cancel op works on every platform, so always send it.
     // The flag check on the worker side is idempotent so duplicates
@@ -307,13 +328,20 @@ class DbWriteWorkerPool {
   getStatus(): WorkerStatus {
     return {
       ...this.status,
-      pid: this.proc?.pid ?? null,
-      mode: this.proc ? this.status.mode : "in-process"
+      pid: this.proc?.pid ?? this.thread?.threadId ?? null,
+      mode: this.proc || this.thread ? this.status.mode : "in-process"
     };
   }
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    if (this.thread) {
+      try {
+        this.thread.postMessage({ id: randomUUID(), op: "shutdown" });
+      } catch { /* ignore */ }
+      try { await this.thread.terminate(); } catch { /* ignore */ }
+      this.thread = null;
+    }
     if (this.proc) {
       try {
         const id = randomUUID();
@@ -353,7 +381,7 @@ class DbWriteWorkerPool {
   }
 
   private async ensureWorker(): Promise<void> {
-    if (this.proc && this.status.mode === "worker") return;
+    if ((this.proc || this.thread) && this.status.mode === "worker") return;
     if (this.initPromise) return this.initPromise;
     this.initPromise = this.spawn().finally(() => { this.initPromise = null; });
     return this.initPromise;
@@ -378,81 +406,146 @@ class DbWriteWorkerPool {
       );
     }
 
-    // Pick the runner: dev → reuse the parent's tsx loader, prod →
-    // node (the entry is .cjs in the SEA bundle; in the source-tree
-    // dev mode the same path serves the .ts via tsx).
-    //
-    // We deliberately do NOT spawn `npx tsx ...` here. On Windows
-    // npx.cmd can't be invoked directly as a child process without
-    // shell:true (and shell:true breaks the stdio pipes we use for
-    // IPC), and `--yes` is slow + requires network. Instead we
-    // re-exec Node with the same tsx loader the parent process used.
-    // process.argv[1] for the parent is the .ts entry (under tsx);
-    // for the worker we substitute the worker entry. This is the
-    // same approach the embedding-worker-client uses.
-    const isDev = entry.endsWith(".ts");
-    let cmd: string;
-    let args: string[];
-    if (isDev) {
-      cmd = process.execPath;
-      // Parent was started as `node --import tsx-loader src/index.ts`
-      // (or the equivalent tsx wrapper). Replicate the loader so
-      // the worker can import .ts files the same way. --import must
-      // appear before the entry file in argv.
-      const parentArgs = process.execArgv ?? [];
-      args = [...parentArgs, entry];
-    } else {
-      cmd = process.execPath;
-      args = [entry];
-    }
-
     // Find the DB path. SqlitePool owns it; we read it back via the
     // marker on _pool. For dev it's `./data/sag.db`; the env var
     // DATABASE_FILE overrides.
     const dbPath = process.env.DATABASE_FILE ?? resolvePath(process.cwd(), "data", "sag.db");
 
-    const proc = spawn(cmd, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        SAG_DBWRITE_WORKER_DB: dbPath
-      },
-      windowsHide: true
+    if (entry.endsWith(".ts")) {
+      // Dev mode: spawn a child process (tsx can only transpile .ts
+      // files, and the Worker constructor needs a real .js/.cjs path).
+      //
+      // We deliberately do NOT spawn `npx tsx ...` here. On Windows
+      // npx.cmd can't be invoked directly as a child process without
+      // shell:true (and shell:true breaks the stdio pipes we use for
+      // IPC), and `--yes` is slow + requires network. Instead we
+      // re-exec Node with the same tsx loader the parent process used.
+      const parentArgs = process.execArgv ?? [];
+      const proc = spawn(process.execPath, [...parentArgs, entry], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          SAG_DBWRITE_WORKER_DB: dbPath
+        },
+        windowsHide: true
+      });
+      this.proc = proc as unknown as ChildProcessByStdio<null, null, null>;
+      this.status.pid = proc.pid ?? null;
+      this.status.mode = "worker";
+      this.status.fallbackReason = null;
+      this.status.lastError = null;
+      this.stdoutBuf = "";
+      this.stderrBuf = "";
+
+      proc.stdout.setEncoding("utf8");
+      proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
+      proc.stderr.setEncoding("utf8");
+      proc.stderr.on("data", (chunk: string) => this.onStderr(chunk));
+
+      proc.on("exit", (code, signal) => {
+        this.status.mode = "in-process";
+        this.status.pid = null;
+        const reason = `worker exited code=${code} signal=${signal}`;
+        this.status.lastError = reason;
+        this.proc = null;
+        // Reject any in-flight requests so the awaiting batch fails over.
+        for (const [id, p] of this.pending) {
+          p.reject(new Error(`db-write-worker: ${reason}`));
+          this.pending.delete(id);
+        }
+      });
+      proc.on("error", (err) => {
+        this.status.lastError = err.message;
+        this.status.mode = "in-process";
+        this.proc = null;
+      });
+
+      if (this.shuttingDown) {
+        try { proc.kill(); } catch { /* ignore */ }
+        this.proc = null;
+      }
+      return;
+    }
+
+    // Packaged build: run the worker in a worker THREAD.
+    //
+    // The SEA host has no separate node.exe — `process.execPath` IS
+    // SAG-backend.exe — so spawning a child process with the worker
+    // path as an argument boots a SECOND BACKEND instead of the
+    // worker: it never speaks the IPC protocol, every batch timed out
+    // after 60 s, and document ingestion failed with HTTP 500
+    // ("db-write-worker: op=batch timed out after 60000ms", observed
+    // 2026-10-29 on the live E:\ install).
+    //
+    // A worker thread has none of those problems (it is exactly how
+    // the embedding worker already runs in the SEA build) and needs no
+    // external interpreter. The worker's `require()` of better-sqlite3
+    // resolves through NODE_PATH, which we point at the per-machine
+    // cache's node_modules directory — same trick as the embedding
+    // worker client.
+    const nodeModulesDir = (() => {
+      try {
+        if (process.env.SAG_NATIVE_CACHE_DIR) {
+          const fromEnv = join(process.env.SAG_NATIVE_CACHE_DIR, "node_modules");
+          if (existsSync(fromEnv)) return fromEnv;
+        }
+        // <exe>/native-cache/<hash>/__bundle__/sag.db-write-worker.cjs
+        //   -> <exe>/native-cache/<hash>/node_modules
+        const bundleDir = dirname(entry);
+        const candidate = join(dirname(bundleDir), "node_modules");
+        return existsSync(candidate) ? candidate : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    const workerEnv: NodeJS.ProcessEnv = { ...process.env, SAG_DBWRITE_WORKER_DB: dbPath };
+    if (nodeModulesDir) {
+      const existing = workerEnv.NODE_PATH;
+      workerEnv.NODE_PATH = existing
+        ? `${nodeModulesDir}${delimiter}${existing}`
+        : nodeModulesDir;
+    }
+
+    const thread = new Worker(entry, {
+      // `execArgv: []` keeps the thread from inheriting --inspect,
+      // which would try to bind the debug port twice.
+      execArgv: [],
+      env: workerEnv,
+      workerData: { dbPath }
     });
-    this.proc = proc as unknown as ChildProcessByStdio<null, null, null>;
-    this.status.pid = proc.pid ?? null;
+    this.thread = thread;
+    this.status.pid = thread.threadId ?? null;
     this.status.mode = "worker";
     this.status.fallbackReason = null;
     this.status.lastError = null;
-    this.stdoutBuf = "";
-    this.stderrBuf = "";
 
-    proc.stdout.setEncoding("utf8");
-    proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
-    proc.stderr.setEncoding("utf8");
-    proc.stderr.on("data", (chunk: string) => this.onStderr(chunk));
-
-    proc.on("exit", (code, signal) => {
+    thread.on("message", (msg: unknown) => {
+      this.onStdout(`${JSON.stringify(msg)}\n`);
+    });
+    thread.on("error", (err) => {
+      this.status.lastError = err.message;
+      this.status.mode = "in-process";
+      this.thread = null;
+      for (const [id, p] of this.pending) {
+        p.reject(new Error(`db-write-worker: ${err.message}`));
+        this.pending.delete(id);
+      }
+    });
+    thread.on("exit", (code) => {
       this.status.mode = "in-process";
       this.status.pid = null;
-      const reason = `worker exited code=${code} signal=${signal}`;
+      if (this.thread === thread) this.thread = null;
+      const reason = `worker thread exited code=${code}`;
       this.status.lastError = reason;
-      this.proc = null;
-      // Reject any in-flight requests so the awaiting batch fails over.
       for (const [id, p] of this.pending) {
         p.reject(new Error(`db-write-worker: ${reason}`));
         this.pending.delete(id);
       }
     });
-    proc.on("error", (err) => {
-      this.status.lastError = err.message;
-      this.status.mode = "in-process";
-      this.proc = null;
-    });
 
     if (this.shuttingDown) {
-      try { proc.kill(); } catch { /* ignore */ }
-      this.proc = null;
+      try { void thread.terminate(); } catch { /* ignore */ }
+      this.thread = null;
     }
   }
 
@@ -506,6 +599,28 @@ class DbWriteWorkerPool {
   }
 
   private sendReceive(req: { id: string; op: string; sql?: string; params?: unknown[]; stmts?: Array<{ sql: string; params?: unknown[] }> }): Promise<unknown> {
+    // Two transports: a worker thread (packaged build) and a child
+    // process (dev). The request/response shapes are identical.
+    if (this.thread) {
+      const thread = this.thread;
+      return new Promise<unknown>((resolve, reject) => {
+        this.pending.set(req.id, { resolve: (r) => resolve(r), reject });
+        try {
+          thread.postMessage(req);
+        } catch (err) {
+          this.pending.delete(req.id);
+          reject(err as Error);
+          return;
+        }
+        const watchdog = setTimeout(() => {
+          if (this.pending.has(req.id)) {
+            this.pending.delete(req.id);
+            reject(new Error(`db-write-worker: op=${req.op} timed out after ${DB_WRITE_OP_TIMEOUT_MS}ms`));
+          }
+        }, DB_WRITE_OP_TIMEOUT_MS);
+        watchdog.unref();
+      });
+    }
     if (!this.proc) throw new Error("db-write-worker: not running");
     const proc = this.proc;
     return new Promise<unknown>((resolve, reject) => {
