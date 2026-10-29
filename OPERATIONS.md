@@ -661,6 +661,13 @@ eventPrep 从 17 分钟降到分钟级。
 > （平均 724 汉字 ≈ 510 token，正好顶到模型上限）。整盘 6,700+ 个 Office
 > 文件的完整入库本来就是几十小时的量级，不是故障。
 
+> ⚠️ 打包版里的 **db-write worker 现在跑在 worker_thread 里**，不是子进程。
+> 原因：SEA 宿主没有独立的 node.exe，`process.execPath` 就是
+> `SAG-backend.exe`，用子进程方式启动会**再起一个完整后端**而不是
+> worker，于是每批写入都等满 60 秒超时（表现为上传接口 500：
+> `db-write-worker: op=batch timed out after 60000ms`）。
+> 2026-10-29 已改为 worker_thread（与向量 worker 一致）。
+
 ---
 
 ## 10. 已知限制
