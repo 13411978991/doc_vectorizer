@@ -316,18 +316,20 @@ export class WatcherManager {
    * the real "how much work is in flight right now" counter.
    */
   getQueueDepth(): { active: number; pending: number } {
-    // Pull from the singleton IngestQueue so we report real pending
-    // items, not an approximation from per-watcher counters (which
-    // don't exist on FolderWatcher anyway — the queue IS the
-    // arbiter of in-flight work).
-    try {
-      // Use createRequire so this works in both tsx ESM and SEA bundle.
-      const require = createRequire(import.meta.url);
-      const { ingestQueue } = require("./ingest-queue.js") as typeof import("./ingest-queue.js");
-      return ingestQueue.getGlobalDepth();
-    } catch {
-      return { active: 0, pending: 0 };
-    }
+    // Use the statically imported singleton — this module already
+    // imports it at the top (and the ingest queue is what actually
+    // arbitrates in-flight work).
+    //
+    // The old implementation did `createRequire(import.meta.url)` and
+    // required("./ingest-queue.js") at CALL time. That works under tsx
+    // (the .ts/.js file really sits next to the module) but NOT in the
+    // SEA bundle, where everything is one CommonJS file
+    // (sag.bundle.cjs) and the sibling path does not exist — the
+    // require threw, the catch swallowed it, and the health endpoint
+    // reported {active: 0, pending: 0} forever. The UI then showed
+    // "nothing is being ingested" while documents were actually being
+    // embedded (2026-10-29).
+    return ingestQueue.getGlobalDepth();
   }
 
   /**
