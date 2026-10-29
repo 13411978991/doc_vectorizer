@@ -990,54 +990,21 @@ export class IngestionService {
         rank
       }));
 
-    // 2. 事件向量化（标题 + 内容）
+    // 2. 事件 / 实体 / 关系向量化
+    //
+    // 这三组文本彼此独立，之前却是"每个条目一次请求"（事件 2 条文本、
+    // 实体 1 条、关系 1 条），而且三组还串行执行。于是一份 9 事件 +
+    // 6 实体 + 6 关系的文档要发 21 次独立请求，每次都要排在向量 worker
+    // 的串行队列后面等上一批 64 条跑完（~100s）——实测 3 个切片的文档
+    // 光 eventPrep 就花了 17 分钟（eventEmbedding/entityEmbedding/
+    // relationEmbedding 各自 90~100s，而真正要算的向量只有几十条）。
+    //
+    // 现在改成"每组一次批量请求 + 三组并行发出"：一次文档只占用
+    // ⌈文本数 / EMBEDDING_WORKER_REQUEST_BATCH⌉ 个 worker 批次，
+    // 21 次串行队列等待变成 1~2 次。
     throwIfAborted();
     const t2 = Date.now();
-    let embeddedEvents = 0;
-    const eventEmbeddingInputs = await mapWithConcurrency(eventInputs, input.concurrency, async (eventInput) => {
-      const [titleEmbedding, contentEmbedding] = await this.embeddings.batchGenerate([
-        capForEmbedding(eventInput.event.title),
-        capForEmbedding(`${eventInput.event.title}\n\n${eventInput.event.content}`)
-      ]);
-      embeddedEvents += 1;
-      input.onProgress?.({
-        stage: "EMBEDDING_EVENTS",
-        message: `正在并行生成事件向量（并发 ${input.concurrency}），已完成 ${embeddedEvents}/${eventInputs.length} 个事件`,
-        progress: progressForCompleted(embeddedEvents, Math.max(eventInputs.length, 1), 74, 82),
-        chunkCount: input.chunks.length,
-        eventCount: eventInputs.length,
-        totalChunks: input.chunks.length
-      });
-      return {
-        ...eventInput,
-        titleEmbedding,
-        contentEmbedding
-      } satisfies EventEmbeddingInput;
-    });
-    stages.eventEmbedding = Date.now() - t2;
-    throwIfAborted();
-
     const entityInputs = dedupeEntityEmbeddingInputs(eventInputs.flatMap((item) => item.event.entities));
-    // 3. 实体向量化
-    const t3 = Date.now();
-    let embeddedEntities = 0;
-    const entityEmbeddingEntries = await mapWithConcurrency(entityInputs, input.concurrency, async (inputItem) => {
-      const embedding = await this.embeddings.generate(capForEmbedding(inputItem.entity.name));
-      embeddedEntities += 1;
-      input.onProgress?.({
-        stage: "EMBEDDING_EVENTS",
-        message: `正在并行生成实体向量（并发 ${input.concurrency}），已完成 ${embeddedEntities}/${entityInputs.length} 个实体`,
-        progress: progressForCompleted(embeddedEntities, Math.max(entityInputs.length, 1), 82, 88),
-        chunkCount: input.chunks.length,
-        eventCount: eventInputs.length,
-        totalChunks: input.chunks.length
-      });
-      return [inputItem.key, embedding] as const;
-    });
-    const entityEmbeddings = new Map(entityEmbeddingEntries);
-    stages.entityEmbedding = Date.now() - t3;
-    throwIfAborted();
-
     const relationInputs: RelationEmbeddingInput[] = eventInputs.flatMap((item) => (
       item.event.entities.map((entity) => ({
         eventId: item.eventId,
@@ -1045,25 +1012,74 @@ export class IngestionService {
         entity
       }))
     ));
-    // 4. 关系向量化
-    const t4 = Date.now();
-    let embeddedRelations = 0;
-    const relationEmbeddingEntries = await mapWithConcurrency(relationInputs, input.concurrency, async (inputItem) => {
-      const embedding = await this.embeddings.generate(capForEmbedding(inputItem.entity.description || `${inputItem.eventTitle} ${inputItem.entity.name}`));
-      embeddedRelations += 1;
-      input.onProgress?.({
-        stage: "EMBEDDING_EVENTS",
-        message: `正在并行生成关系向量（并发 ${input.concurrency}），已完成 ${embeddedRelations}/${relationInputs.length} 条关系`,
-        progress: progressForCompleted(embeddedRelations, Math.max(relationInputs.length, 1), 88, 92),
-        chunkCount: input.chunks.length,
-        eventCount: eventInputs.length,
-        totalChunks: input.chunks.length
-      });
-      return [relationEmbeddingKey(inputItem.eventId, inputItem.entity), embedding] as const;
+
+    // 2a. 事件向量（每个事件 2 条文本：标题、标题+正文）
+    const eventTexts: string[] = [];
+    for (const eventInput of eventInputs) {
+      eventTexts.push(capForEmbedding(eventInput.event.title));
+      eventTexts.push(capForEmbedding(`${eventInput.event.title}\n\n${eventInput.event.content}`));
+    }
+    // 2b. 实体向量（实体名）
+    const entityTexts = entityInputs.map((item) => capForEmbedding(item.entity.name));
+    // 2c. 关系向量（实体描述或"事件标题 + 实体名"）
+    const relationTexts = relationInputs.map((item) =>
+      capForEmbedding(item.entity.description || `${item.eventTitle} ${item.entity.name}`)
+    );
+
+    input.onProgress?.({
+      stage: "EMBEDDING_EVENTS",
+      message: `正在批量生成事件 / 实体 / 关系向量（${eventTexts.length + entityTexts.length + relationTexts.length} 条文本）`,
+      progress: progressForCompleted(0, Math.max(eventTexts.length + entityTexts.length + relationTexts.length, 1), 74, 92),
+      chunkCount: input.chunks.length,
+      eventCount: eventInputs.length,
+      totalChunks: input.chunks.length
     });
-    const relationEmbeddings = new Map(relationEmbeddingEntries);
-    stages.relationEmbedding = Date.now() - t4;
+
+    // 三组互不依赖，一次性并发发出；向量 worker 内部会按
+    // EMBEDDING_WORKER_REQUEST_BATCH 自行拆批。
+    const [eventVectors, entityVectors, relationVectors] = await Promise.all([
+      eventTexts.length > 0 ? this.embeddings.batchGenerate(eventTexts) : Promise.resolve([]),
+      entityTexts.length > 0 ? this.embeddings.batchGenerate(entityTexts) : Promise.resolve([]),
+      relationTexts.length > 0 ? this.embeddings.batchGenerate(relationTexts) : Promise.resolve([])
+    ]);
+    stages.eventEmbedding = Date.now() - t2;
     throwIfAborted();
+
+    const entityEmbeddings = new Map<string, number[]>();
+    entityInputs.forEach((inputItem, index) => {
+      const vector = entityVectors[index];
+      if (vector) entityEmbeddings.set(inputItem.key, vector);
+    });
+    stages.entityEmbedding = Date.now() - t2;
+    throwIfAborted();
+
+    const relationEmbeddings = new Map<string, number[]>();
+    relationInputs.forEach((inputItem, index) => {
+      const vector = relationVectors[index];
+      if (vector) relationEmbeddings.set(relationEmbeddingKey(inputItem.eventId, inputItem.entity), vector);
+    });
+    stages.relationEmbedding = Date.now() - t2;
+    throwIfAborted();
+
+    const eventEmbeddingInputs: EventEmbeddingInput[] = eventInputs.map((eventInput, index) => ({
+      ...eventInput,
+      titleEmbedding: eventVectors[index * 2],
+      contentEmbedding: eventVectors[index * 2 + 1]
+    }));
+
+    input.onProgress?.({
+      stage: "EMBEDDING_EVENTS",
+      message: `已完成事件 / 实体 / 关系向量（${eventInputs.length} 事件、${entityInputs.length} 实体、${relationInputs.length} 关系）`,
+      progress: progressForCompleted(
+        eventInputs.length + entityInputs.length + relationInputs.length,
+        Math.max(eventInputs.length + entityInputs.length + relationInputs.length, 1),
+        74,
+        92
+      ),
+      chunkCount: input.chunks.length,
+      eventCount: eventInputs.length,
+      totalChunks: input.chunks.length
+    });
 
     logger.info({
       title: input.input.title,

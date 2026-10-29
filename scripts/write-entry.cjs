@@ -101,6 +101,41 @@ function unpackOnce() {
       );
     }
   }
+  // The embedding worker is a separate bundle: it runs in a
+  // worker_thread and must be loadable as a FILE next to the main
+  // bundle, not as a package inside node_modules. Copy it into the
+  // per-machine cache so the runtime can spawn it from a stable path.
+  if (MANIFEST.__embeddingWorker__) {
+    const workerSrc = path.join(sourceCacheDir, MANIFEST.__embeddingWorker__);
+    const workerDst = path.join(bundleDir, "sag.embedding-worker.cjs");
+    try {
+      fs.copyFileSync(workerSrc, workerDst);
+    } catch (err) {
+      throw new Error(
+        "failed to refresh __bundle__/sag.embedding-worker.cjs: " + err.message +
+        " (This usually means Windows AV is locking the file. " +
+        "Add the native-cache/ dir to your AV exclusion list.)"
+      );
+    }
+  }
+  // Same for the DB-write worker: it is spawned as a child process
+  // and the pool resolves it from <base>/__bundle__/. Without this
+  // copy the pool can only look for the dev-mode .ts source, so in a
+  // packaged build every document write fell back to the main thread
+  // (2026-10-29: "db-write-worker entry not found" per document).
+  if (MANIFEST.__dbWriteWorker__) {
+    const dbWriteSrc = path.join(sourceCacheDir, MANIFEST.__dbWriteWorker__);
+    const dbWriteDst = path.join(bundleDir, "sag.db-write-worker.cjs");
+    try {
+      fs.copyFileSync(dbWriteSrc, dbWriteDst);
+    } catch (err) {
+      throw new Error(
+        "failed to refresh __bundle__/sag.db-write-worker.cjs: " + err.message +
+        " (This usually means Windows AV is locking the file. " +
+        "Add the native-cache/ dir to your AV exclusion list.)"
+      );
+    }
+  }
   return baseDir;
 }
 

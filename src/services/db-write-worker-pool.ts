@@ -32,8 +32,8 @@
  */
 
 import { spawn, ChildProcessByStdio } from "node:child_process";
-import { resolve as resolvePath } from "node:path";
-import { existsSync } from "node:fs";
+import { resolve as resolvePath, join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -42,6 +42,36 @@ import { logger } from "../observability/logger.js";
 import { pool } from "../db/pool.js";
 import { IngestAbortError } from "./ingestion-service.js";
 import { DB_WRITE_OP_TIMEOUT_MS } from "../config/tuning-constants.js";
+
+/**
+ * Locate a worker bundle staged inside the per-machine native-cache.
+ *
+ * The SEA build stages worker bundles as `<cache>/__bundle__/<name>.cjs`
+ * next to `sag.bundle.cjs`, and the runtime copies the whole cache into
+ * a per-machine directory (either `$SAG_NATIVE_CACHE_DIR`, or
+ * `<exeDir>/native-cache/<12-hex-hash>/`). This mirrors the lookup the
+ * embedding worker client does — without it the pool could only find
+ * the dev-mode `.ts` source, so every SEA build failed to spawn the
+ * worker and silently kept all bulk writes on the main thread
+ * (2026-10-29: "db-write-worker entry not found" once per document).
+ */
+function stagedWorkerCandidates(fileName: string): string[] {
+  const out: string[] = [];
+  try {
+    if (process.env.SAG_NATIVE_CACHE_DIR) {
+      out.push(join(process.env.SAG_NATIVE_CACHE_DIR, "__bundle__", fileName));
+    }
+    const exeDir = dirname(process.execPath);
+    const ncRoot = join(exeDir, "native-cache");
+    for (const e of readdirSync(ncRoot, { withFileTypes: true })) {
+      if (!e.isDirectory() || !/^[0-9a-f]{12}$/.test(e.name)) continue;
+      out.push(join(ncRoot, e.name, "__bundle__", fileName));
+    }
+  } catch {
+    /* native-cache unreadable — fall through to the other candidates */
+  }
+  return out;
+}
 
 export interface ExecResult<T = unknown> {
   rows: T[];
@@ -336,6 +366,7 @@ class DbWriteWorkerPool {
     // candidates in order and pick the first that exists.
     const here = dirname(fileURLToPath(import.meta.url));
     const candidates = [
+      ...stagedWorkerCandidates("sag.db-write-worker.cjs"),
       resolvePath(here, "..", "workers", "db-write-worker-entry.ts"),
       resolvePath(here, "..", "..", "src", "workers", "db-write-worker-entry.ts"),
       resolvePath(process.cwd(), "src", "workers", "db-write-worker-entry.ts")

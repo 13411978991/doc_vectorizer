@@ -143,10 +143,19 @@ const envSchema = z.object({
   // LLM probe 12 s) and starved the LLM extraction stage that runs
   // after it. Splitting the request into 64-text chunks keeps every
   // request far below any timeout and keeps the main thread free.
-  EMBEDDING_WORKER_REQUEST_BATCH: z.coerce.number().int().positive().max(512).default(64),
+  //
+  // 2026-10-29: 64 → 16. The embedding worker serialises ops FIFO,
+  // so one 64-text request (≈2 min of ONNX) blocks every other
+  // request behind it — with a 2,295-chunk workbook hogging the
+  // worker, every small document waited ~2 minutes per request and
+  // the folder ingested at ~4 files/hour. Smaller batches interleave
+  // much more finely: the same workbook takes the same total ONNX
+  // time, but a small document's request now waits ≤ ~30 s instead
+  // of ~2 min. Raise it if you only ever ingest one big file at a time.
+  EMBEDDING_WORKER_REQUEST_BATCH: z.coerce.number().int().positive().max(512).default(16),
   // Per-request timeout for a single embedding-worker request. With the
-  // request split above, 64 texts take ~3 minutes; 30 minutes is a
-  // generous safety net for slow CPUs / huge models.
+  // request split above, 16 texts take well under a minute; 30 minutes
+  // is a generous safety net for slow CPUs / huge models.
   EMBEDDING_WORKER_TIMEOUT_MS: z.coerce.number().int().positive().max(3_600_000).default(1_800_000),
   // ─── Large-file optimisation knobs ─────────────────────────────────────
   // Global hard cap on a single ingest file's size. Files above this

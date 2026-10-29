@@ -478,11 +478,23 @@ function stepNativeMap() {
           copyFileSync(workerPath, join(bundleDir, "sag.embedding-worker.cjs"));
           log("  + refreshed dist/native-cache/__bundle__/sag.embedding-worker.cjs");
         }
+        // Same for the DB-write worker (see the note at the bundle
+        // build site) — the fast-build path must keep it staged.
+        const dbWritePath = join(DIST, "sag.db-write-worker.cjs");
+        if (existsSync(dbWritePath)) {
+          const bundleDir = join(nativeCacheDir, "__bundle__");
+          mkdirSync(bundleDir, { recursive: true });
+          copyFileSync(dbWritePath, join(bundleDir, "sag.db-write-worker.cjs"));
+          log("  + refreshed dist/native-cache/__bundle__/sag.db-write-worker.cjs");
+        }
         const raw = readFileSync(manifestPath, "utf8");
         const manifest = JSON.parse(raw);
         manifest.__bundle__ = "__bundle__/sag.bundle.cjs";
         if (existsSync(workerPath)) {
           manifest.__embeddingWorker__ = "__bundle__/sag.embedding-worker.cjs";
+        }
+        if (existsSync(dbWritePath)) {
+          manifest.__dbWriteWorker__ = "__bundle__/sag.db-write-worker.cjs";
         }
         // P30 fix: after refreshing the bundle, the per-machine cache
         // fingerprint MUST be recomputed too. Without this, the
@@ -731,6 +743,19 @@ function stepNativeMap() {
   } else {
     log("  ! dist/sag.embedding-worker.cjs missing — local-BGE will fall back to in-process ONNX");
   }
+  // The DB-write worker needs the same treatment: it is spawned as a
+  // child process and the pool resolves it from __bundle__/. Without
+  // this the SEA build could never find it and every document write
+  // fell back to the main thread.
+  const dbWriteBundleOut = join(DIST, "sag.db-write-worker.cjs");
+  const dbWriteStagePath = join(nativeCacheDir, "__bundle__", "sag.db-write-worker.cjs");
+  if (existsSync(dbWriteBundleOut)) {
+    mkdirSync(join(nativeCacheDir, "__bundle__"), { recursive: true });
+    copyFileSync(dbWriteBundleOut, dbWriteStagePath);
+    log("✓ db-write-worker re-staged after native-cache wipe:", dbWriteStagePath);
+  } else {
+    log("  ! dist/sag.db-write-worker.cjs missing — DB writes stay on the main thread");
+  }
   // Layout:
   //   dist/native-cache/<pkg>/<rel>      — raw binary, mirrors node_modules layout
   //   dist/native-cache/manifest.json    — index of every <pkg>/<rel>
@@ -848,6 +873,21 @@ function stepNativeMap() {
       log("  + registered embedding-worker in manifest: __bundle__/" + workerRel);
     } else {
       log("  ! embedding-worker NOT staged — local-BGE will fall back to in-process ONNX");
+    }
+  }
+  // Same treatment for the DB-write worker: the pool spawns it as a
+  // child process and looks it up in __bundle__/. Registered as a
+  // dedicated manifest field (not a package) for the same reason.
+  {
+    const dbWriteRel = "sag.db-write-worker.cjs";
+    const dbWriteSrc = join(nativeCacheDir, "__bundle__", dbWriteRel);
+    if (existsSync(dbWriteSrc)) {
+      const dbWriteBuf = readFileSync(dbWriteSrc);
+      manifest.__dbWriteWorker__ = "__bundle__/" + dbWriteRel;
+      totalBytes += dbWriteBuf.length;
+      log("  + registered db-write-worker in manifest: __bundle__/" + dbWriteRel);
+    } else {
+      log("  ! db-write-worker NOT staged — DB writes stay on the main thread");
     }
   }
   // Embed a content fingerprint in the manifest so the runtime
@@ -1099,6 +1139,44 @@ async function stepWorkerBundle() {
   mkdirSync(bundleStage, { recursive: true });
   copyFileSync(workerOut, join(bundleStage, "sag.embedding-worker.cjs"));
   log("✓ embedding-worker staged:", "dist/native-cache/__bundle__/sag.embedding-worker.cjs");
+
+  // The DB-write worker gets the same treatment. Without a staged
+  // .cjs entry the pool could only look for `src/workers/db-write-
+  // worker-entry.ts` (dev-only paths), so in the SEA build it ALWAYS
+  // failed with "db-write-worker entry not found" and every document
+  // write landed on the main thread (2026-10-29: one error per
+  // ingested document, visible in the log as a repeating warning).
+  const dbWriteOut = join(DIST, "sag.db-write-worker.cjs");
+  await build({
+    entryPoints: [join(ROOT, "src/workers/db-write-worker-entry.ts")],
+    bundle: true,
+    platform: "node",
+    target: "node22",
+    format: "cjs",
+    external: [
+      ...NATIVE_DEPS,
+      ...DEFAULT_EXTERNAL_ESM_DEPS,
+      "pg-native",
+      "sharp",
+      "@embedded-postgres/*"
+    ],
+    outfile: dbWriteOut,
+    logLevel: "warning",
+    banner: {
+      js: [
+        "// SAG db-write-worker — runs as a child process, keeps bulk",
+        "// SQLite writes off the main thread. Spawned by",
+        "// src/services/db-write-worker-pool.ts.",
+        'var import_meta_url = require("url").pathToFileURL(__filename).href;'
+      ].join("\n")
+    },
+    define: {
+      "import.meta.url": "import_meta_url"
+    }
+  });
+  log("✓ db-write-worker bundle:", "dist/sag.db-write-worker.cjs");
+  copyFileSync(dbWriteOut, join(bundleStage, "sag.db-write-worker.cjs"));
+  log("✓ db-write-worker staged:", "dist/native-cache/__bundle__/sag.db-write-worker.cjs");
 }
 
 // unpackOnce — module-level copy used at BUILD time only. The
@@ -1649,6 +1727,27 @@ function unpackOnce() {
     } catch (err) {
       throw new Error(
         "failed to refresh __bundle__/sag.embedding-worker.cjs: " + err.message +
+        " (This usually means Windows AV is locking the file. " +
+        "Add the native-cache/ dir to your AV exclusion list.)"
+      );
+    }
+  }
+  // Copy the DB-write worker next to the bundle.
+  //
+  // db-write-worker-pool.ts spawns this bundle as a child process and
+  // resolves it from <base>/__bundle__/. Without the copy the pool can
+  // only look for the dev-mode .ts source, so a packaged build ALWAYS
+  // failed with "db-write-worker entry not found" and every document's
+  // bulk write landed on the main thread (2026-10-29: one warning per
+  // ingested document, and the main thread stayed busy during writes).
+  if (MANIFEST.__dbWriteWorker__) {
+    const dbWriteSrc = path.join(sourceCacheDir, MANIFEST.__dbWriteWorker__);
+    const dbWriteDst = path.join(bundleDir, "sag.db-write-worker.cjs");
+    try {
+      fs.copyFileSync(dbWriteSrc, dbWriteDst);
+    } catch (err) {
+      throw new Error(
+        "failed to refresh __bundle__/sag.db-write-worker.cjs: " + err.message +
         " (This usually means Windows AV is locking the file. " +
         "Add the native-cache/ dir to your AV exclusion list.)"
       );
