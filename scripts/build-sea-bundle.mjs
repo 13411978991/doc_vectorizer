@@ -922,6 +922,14 @@ function stepNativeMap() {
   // node_modules/ subdir, so we have to mkdir the parent here.
   mkdirSync(dirname(chalkDst), { recursive: true });
   if (existsSync(chalkSrc)) {
+    // The copy must be VERIFIED. A per-file `catch {}` (added for
+    // AV locks) silently produced an EMPTY chalk/ dir on 2026-10-29:
+    // the manifest was then regenerated from the empty dir, so the
+    // pack gate failed with "chalk/source/index.js missing" — and a
+    // build that "succeeded" left an unusable cache behind. Now the
+    // copy errors are collected and the build fails loudly, and we
+    // verify the expected file count afterwards.
+    const chalkCopyErrors = [];
     function copyDirRobustChalk(src, dst) {
       mkdirSync(dst, { recursive: true });
       for (const ent of readdirSync(src, { withFileTypes: true })) {
@@ -929,10 +937,23 @@ function stepNativeMap() {
         const d = join(dst, ent.name);
         if (ent.isDirectory()) copyDirRobustChalk(s, d);
         else if (ent.isFile()) {
-          try { copyFileSync(s, d); } catch { /* AV lock — skip */ }
+          try { copyFileSync(s, d); } catch (err) { chalkCopyErrors.push(`${s}: ${err.message}`); }
         }
       }
     }
+    function countFilesChalk(dir) {
+      let n = 0;
+      const walk = (d) => {
+        for (const ent of readdirSync(d, { withFileTypes: true })) {
+          const p = join(d, ent.name);
+          if (ent.isDirectory()) walk(p);
+          else n += 1;
+        }
+      };
+      try { walk(dir); } catch { /* unreadable -> 0 */ }
+      return n;
+    }
+    const chalkExpected = countFilesChalk(chalkSrc);
     try { rmSync(chalkDst, { recursive: true, force: true }); } catch {}
     copyDirRobustChalk(chalkSrc, chalkDst);
     log("  + chalk v4 shim → native-cache/node-llama-cpp/node_modules/chalk/");
@@ -948,6 +969,21 @@ function stepNativeMap() {
     try { rmSync(chalkTopDst, { recursive: true, force: true }); } catch {}
     copyDirRobustChalk(chalkSrc, chalkTopDst);
     log("  + chalk v4 shim → native-cache/chalk/ (top-level)");
+    // Verify both copies actually landed. A silently-empty chalk/
+    // directory is fatal: the manifest is regenerated from these dirs,
+    // so an empty copy means the shipped package is broken.
+    for (const dir of [chalkDst, chalkTopDst]) {
+      const got = countFilesChalk(dir);
+      if (got !== chalkExpected) {
+        throw new Error(
+          `chalk v4 shim incomplete: ${got}/${chalkExpected} files in ${dir}` +
+          (chalkCopyErrors.length
+            ? `\n  copy errors:\n    - ${chalkCopyErrors.slice(0, 5).join("\n    - ")}`
+            : "\n  (no copy errors recorded — the source dir may have changed)") +
+          "\n  Close any AV/Explorer window holding the files and rebuild."
+        );
+      }
+    }
     // CRITICAL: re-walk the chalk packages on disk so the
     // manifest's file list reflects the v4 install we just wrote,
     // not the v5 install walkModule captured earlier. Without
