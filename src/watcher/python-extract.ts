@@ -17,7 +17,36 @@ import { performanceSettingsService } from "../services/performance-settings-ser
 
 const PYTHON_CANDIDATES = ["python", "python3", "py"];
 
+/**
+ * Cached result of the Python probe.
+ *
+ * `undefined` = not probed yet, `null` = no usable interpreter.
+ *
+ * Why this cache exists (2026-10-30)
+ * -----------------------------------
+ * `findPython()` used to run on EVERY extraction, spawning
+ * `python -c "print('ok')"` as a liveness probe and then spawning
+ * python AGAIN to do the actual work. Measured on a loaded machine:
+ *
+ *   python -c "pass"          (interpreter startup only)   617 ms
+ *   python -c "print('ok')"   (the probe)                  671 ms
+ *   import openpyxl           (inside the real extraction) 3,975 ms
+ *
+ * So every single .xlsx/.doc/.ppt file paid an extra ~0.7 s of pure
+ * Python interpreter startup before any work began — for a 20 KB
+ * spreadsheet that is ~14% of the total extraction time, and over a
+ * 6,900-file drive it adds up to well over an hour of pure waste.
+ *
+ * The interpreter does not change while the process is alive, so the
+ * probe is done once. This mirrors the existing `cachedScriptsDir`
+ * pattern a few lines below.
+ */
+let cachedPython: string | null | undefined;
+
 async function findPython(): Promise<string | null> {
+  if (cachedPython !== undefined) {
+    return cachedPython;
+  }
   for (const bin of PYTHON_CANDIDATES) {
     const found = await new Promise<boolean>((resolve) => {
       const child = spawn(bin, ["-c", "print('ok')"], { windowsHide: true });
@@ -27,8 +56,12 @@ async function findPython(): Promise<string | null> {
       });
       child.on("close", (code) => resolve(code === 0 && ok));
     });
-    if (found) return bin;
+    if (found) {
+      cachedPython = bin;
+      return bin;
+    }
   }
+  cachedPython = null;
   return null;
 }
 
