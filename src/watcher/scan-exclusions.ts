@@ -200,17 +200,139 @@ export function isExcludedDirPath(absPath: string): boolean {
  * The `(^|[\\/])name([\\/]|$)` pattern requires the name to appear as
  * a whole path segment, so `my-node_modules-backup` is NOT excluded.
  */
-export function makeChokidarIgnoredPredicate(): (path: string) => boolean {
+export function makeChokidarIgnoredPredicate(
+  allowedExtensions?: readonly string[],
+  watchableDirs?: ReadonlySet<string>
+): (path: string) => boolean {
   const exclusions = currentExclusions();
   // Pre-compile one alternation regex for all excluded names.
   const escaped = Array.from(exclusions)
     .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
     .sort((a, b) => b.length - a.length);
-  if (escaped.length === 0) {
+  const pattern =
+    escaped.length === 0
+      ? null
+      : new RegExp(`(^|[\\\\/])(${escaped.join("|")})([\\\\/]|$)`, "i");
+
+  // Extension gate (2026-10-30).
+  //
+  // The directory exclusion above only removes *directories* whose
+  // basename is on the noise list. It does NOT stop chokidar from
+  // opening a watch handle on every regular file on the volume. On
+  // E:\ that is ~305,000 non-Office files that can never be ingested
+  // (the watcher only cares about .doc/.docx/.ppt/.pptx/.xls/.xlsx).
+  //
+  // Measured on the v4 desktop build (2026-10-30): chokidar made
+  // 178,030 `ignored` predicate calls in 600 s, registered ZERO
+  // `add` events, and never emitted `ready`. Meanwhile the backend
+  // process leaked file handles at ~79/s (117k handles after 40 min)
+  // and grew from 1.6 GB to 5.5 GB of RSS while the UI sat on
+  // "扫描文件系统" forever. The startup scan could not finish because
+  // the two enumerations were competing for the same directory
+  // handles and the process was thrashing.
+  //
+  // Gating on the whitelist extension closes that hole: chokidar then
+  // only tracks the ~6.9k files that can actually be ingested.
+  //
+  // NOTE: chokidar's `ignored` predicate receives directories too. We
+  // must NOT exclude a directory just because it has no Office
+  // extension — that would prune the entire tree. So the extension
+  // test only applies to paths that actually look like files, i.e.
+  // have a basename with an extension.
+  const allowed = allowedExtensions && allowedExtensions.length > 0
+    ? new Set(allowedExtensions.map((e) => {
+        const t = e.trim().toLowerCase();
+        return t.startsWith(".") ? t : `.${t}`;
+      }))
+    : null;
+
+  // Directory pruning (2026-10-30).
+  //
+  // chokidar on Windows opens one `ReadDirectoryChangesW` handle per
+  // directory it traverses. On E:\ that is 41,353 handles, but only
+  // 1,443 directories contain a file that can ever be ingested.
+  //
+  // `watchableDirs` is the set of directories we actually want to
+  // watch (the interesting ones plus their ancestors — without the
+  // ancestors chokidar could never reach the interesting ones). Any
+  // directory outside that set is pruned: chokidar does not descend
+  // into it and never opens a handle on it.
+  //
+  // We can only apply the test to a path we KNOW is a directory. A
+  // path with a file extension is a file (handled by the extension
+  // gate); a path with no extension is either a directory or an
+  // extension-less file. chokidar's `ignored` callback receives the
+  // `stats` object when it has one, so we use that to be precise;
+  // when stats are missing we fall back to "has an extension → file,
+  // otherwise → directory".
+  const pruneDirs = watchableDirs && watchableDirs.size > 0;
+
+  if (!pattern && !allowed && !pruneDirs) {
     return () => false;
   }
-  const pattern = new RegExp(`(^|[\\\\/])(${escaped.join("|")})([\\\\/]|$)`, "i");
-  return (candidate: string) => pattern.test(candidate);
+
+  return (candidate: string, stats?: { isDirectory?: () => boolean }) => {
+    if (pattern && pattern.test(candidate)) {
+      return true;
+    }
+
+    const slash = Math.max(candidate.lastIndexOf("/"), candidate.lastIndexOf("\\"));
+    const basename = slash >= 0 ? candidate.slice(slash + 1) : candidate;
+    const dot = basename.lastIndexOf(".");
+    const hasExtension = dot > 0;
+
+    // Is this a directory? chokidar's initial scan runs readdirp with
+    // `alwaysStat: true`, so `stats` is available and authoritative.
+    // When it is missing we fall back to the extension heuristic.
+    //
+    // The distinction matters: a DIRECTORY whose name contains a dot
+    // (e.g. "v1.1（增加支持csv）") would otherwise be mistaken for a
+    // file, fail the extension whitelist, and get pruned — taking its
+    // entire subtree with it.
+    const isDir = stats && typeof stats.isDirectory === "function"
+      ? stats.isDirectory()
+      : !hasExtension;
+
+    if (isDir) {
+      // Directories are pruned unless they are (or lead to) a
+      // directory that holds ingestible files.
+      if (pruneDirs && !watchableDirs!.has(normalizeWatchKey(candidate))) {
+        return true;
+      }
+      return false;
+    }
+
+    // A regular file: keep it only if its extension is whitelisted.
+    if (allowed && hasExtension) {
+      const ext = basename.slice(dot).toLowerCase();
+      if (!allowed.has(ext)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+}
+
+/**
+ * Normalise a directory path for set membership.
+ *
+ * Two things matter here:
+ *
+ *   1. **Separator style.** chokidar runs every path through its
+ *      internal `normalizePathToUnix` before handing it to the
+ *      `ignored` predicate, so it always arrives as `E:/a/b`, never
+ *      `E:\a\b`. Our own traversal produces the Windows form. If the
+ *      two disagree, every lookup misses and chokidar prunes the
+ *      entire tree (symptom: the watcher goes live but sees nothing).
+ *      We therefore fold both to forward slashes.
+ *
+ *   2. **Case.** Windows paths are case-insensitive and chokidar may
+ *      report a different casing than the traversal did, so we
+ *      upper-case the key.
+ */
+export function normalizeWatchKey(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "").toUpperCase();
 }
 
 /**

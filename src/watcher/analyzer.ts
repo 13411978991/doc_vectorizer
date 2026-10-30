@@ -224,6 +224,128 @@ async function enumerateFiles(
 }
 
 /**
+ * Walk the tree once and report which directories actually contain
+ * files the watcher would ingest.
+ *
+ * Why this exists (2026-10-30)
+ * ---------------------------
+ * chokidar on Windows opens one `ReadDirectoryChangesW` watch handle per
+ * directory it traverses. On a drive-root watch that is 41,353 handles
+ * for E:\ — and 39,910 of those directories (96.5%) contain no file
+ * that can ever match the whitelist, so they can never produce an
+ * event worth acting on.
+ *
+ * Measured on the v4 desktop build: chokidar made 178,030 `ignored`
+ * predicate calls in 600 s, registered ZERO `add` events, and never
+ * fired `ready`. The backend leaked handles at ~79/s (117k after 40
+ * min), grew from 1.6 GB to 5.5 GB of RSS, and finally died with
+ * `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap
+ * out of memory`. The UI sat on "扫描文件系统" forever because the
+ * watcher never became live.
+ *
+ * This function answers the question chokidar can't answer cheaply:
+ * *which directories are worth watching?* It reuses the exact same
+ * traversal and whitelist rules as `enumerateFiles`, so it costs one
+ * extra directory walk (26 s on E:\) and then lets the watcher hold
+ * watch handles only on directories that matter.
+ *
+ * Directories with no matching file are still *returned* in
+ * `allDirs` so the caller can reason about coverage, but only
+ * `interestingDirs` (and their ancestors) need a watch handle.
+ */
+export async function enumerateWatchTargets(
+  root: string,
+  recursive: boolean,
+  includeFile?: (relPath: string) => boolean
+): Promise<{ interestingDirs: Set<string>; allDirs: Set<string>; matchedFiles: number }> {
+  const interestingDirs = new Set<string>();
+  const allDirs = new Set<string>();
+  let matchedFiles = 0;
+
+  const limit = pLimit(DIR_CONCURRENCY);
+  const queue: string[] = [root];
+  const seen = new Set<string>();
+  const inFlight: Promise<void>[] = [];
+
+  const processDir = async (dir: string): Promise<void> => {
+    if (seen.has(dir)) return;
+    seen.add(dir);
+    allDirs.add(dir);
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        continue;
+      } else if (entry.isDirectory()) {
+        if (isExcludedDirName(entry.name)) {
+          continue;
+        }
+        if (recursive) {
+          queue.push(abs);
+        }
+      } else if (entry.isFile()) {
+        const relPath = path.relative(root, abs).split(path.sep).join("/");
+        if (includeFile && !includeFile(relPath)) {
+          continue;
+        }
+        matchedFiles++;
+        interestingDirs.add(dir);
+      }
+    }
+  };
+
+  while (queue.length > 0 || inFlight.length > 0) {
+    while (queue.length > 0 && inFlight.length < DIR_CONCURRENCY) {
+      const next = queue.shift()!;
+      const p = limit(() => processDir(next)).finally(() => {
+        const idx = inFlight.indexOf(p);
+        if (idx >= 0) inFlight.splice(idx, 1);
+      });
+      inFlight.push(p);
+    }
+    if (inFlight.length > 0) {
+      await Promise.race(inFlight);
+    }
+  }
+
+  return { interestingDirs, allDirs, matchedFiles };
+}
+
+/**
+ * Expand a set of directories to include every ancestor up to (and
+ * including) `root`.
+ *
+ * chokidar can only reach a directory if it also traverses its
+ * parents. If we prune every non-interesting directory, chokidar never
+ * descends far enough to find the interesting ones — so the ancestors
+ * have to stay watchable. On E:\ the interesting set is 1,443
+ * directories and the ancestor set is only ~200, which is a 25x
+ * reduction in watch handles compared with traversing all 41,353.
+ */
+export function expandToAncestors(dirs: Set<string>, root: string): Set<string> {
+  const rootNorm = path.resolve(root);
+  const out = new Set<string>();
+  for (const dir of dirs) {
+    let current = path.resolve(dir);
+    // Guard against a path outside the root (shouldn't happen, but a
+    // symlinked root could produce one) — don't walk past the root.
+    for (;;) {
+      out.add(current);
+      if (current === rootNorm) break;
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  return out;
+}
+
+/**
  * Scan a folder and classify each file as added/updated/unchanged/deleted
  * against the manifest entries we already have on record.
  *
@@ -235,6 +357,50 @@ async function enumerateFiles(
 export async function scanFolder(
   folder: WatchedFolderRecord,
   existing: ExistingManifestEntry[] = []
+): Promise<ScanResult> {
+  // Per-folder scan lock (2026-10-30).
+  //
+  // A folder can be scanned from several places at once: the startup
+  // sync, a manual "scan now", the periodic rescan, and a debounced
+  // diff scan triggered by a chokidar event. On a drive-root watch
+  // each of those walks 41k directories and SHA-1s ~6.9k files, so
+  // running four at once quadruples the disk I/O for no benefit —
+  // measured on E:\: four concurrent scans, each taking 122–392 s.
+  //
+  // The first caller for a folder does the work; concurrent callers
+  // await the same promise and receive the same result. The result is
+  // a diff of the tree against the manifest, and the ingest queue
+  // dedupes by (folderId, relPath), so sharing it is safe.
+  const key = folder.id;
+  const inFlight = inFlightScans.get(key);
+  if (inFlight) {
+    logger.info(
+      { folderId: folder.id, path: folder.path },
+      "watcher: scan already in progress, reusing its result"
+    );
+    return inFlight;
+  }
+  const promise = runScan(folder, existing);
+  inFlightScans.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    // Only clear the slot if we are still the owner — a later scan may
+    // have already replaced it.
+    if (inFlightScans.get(key) === promise) {
+      inFlightScans.delete(key);
+    }
+  }
+}
+
+/**
+ * In-flight scans, keyed by watched-folder id. See `scanFolder`.
+ */
+const inFlightScans = new Map<string, Promise<ScanResult>>();
+
+async function runScan(
+  folder: WatchedFolderRecord,
+  existing: ExistingManifestEntry[]
 ): Promise<ScanResult> {
   const root = folder.path;
 

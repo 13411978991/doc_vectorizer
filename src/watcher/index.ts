@@ -7,9 +7,10 @@ import { toLocalISO } from "../db/row-helpers.js";
 import { logger } from "../observability/logger.js";
 import { syncFolder, syncFolderWith } from "./sync-orchestrator.js";
 import { ingestQueue, type QueueItem } from "./ingest-queue.js";
-import { scanFolder } from "./analyzer.js";
+import { scanFolder, enumerateWatchTargets, expandToAncestors } from "./analyzer.js";
 import { computeSha1, getInode } from "./analyzer.js";
-import { makeChokidarIgnoredPredicate } from "./scan-exclusions.js";
+import { makeChokidarIgnoredPredicate, normalizeWatchKey } from "./scan-exclusions.js";
+import { DEFAULT_SUPPORTED_EXTENSIONS } from "./types.js";
 import { getFolder, getLatestSyncRun, getManifest, resetManifestForRetry, listFailedManifestEntries, purgeDeletedManifests } from "./manifest-store.js";
 import { sweepStartupOrphans } from "./com-decrypt.js";
 import type { WatchedFolderRecord } from "./types.js";
@@ -33,10 +34,35 @@ import type { WatchedFolderRecord } from "./types.js";
  * before attaching the watcher, so the initial state of the folder is
  * caught up even if events are missed while the process was down.
  */
+/**
+ * How long we are willing to wait for chokidar's `ready` event before
+ * giving up and continuing without it.
+ *
+ * On a normal folder this is sub-second. On a drive-root watch
+ * (E:\ = 311,978 files / 42,950 directories) chokidar's initial
+ * enumeration used to take longer than any reasonable wait, and
+ * awaiting it forever wedged the API (health endpoint stopped
+ * answering, "start watcher" request never returned). 120 s is long
+ * enough for a legitimately slow enumeration and short enough that a
+ * stuck one degrades to "watcher still starting" rather than "the
+ * whole backend is frozen".
+ */
+const CHOKIDAR_READY_TIMEOUT_MS = 120_000;
+
 export class WatcherManager {
   private readonly watchers = new Map<string, chokidar.FSWatcher>();
   private readonly debounceTimers = new Map<string, NodeJS.Timeout>();
   private readonly healthTimers = new Map<string, NodeJS.Timeout>();
+  private readonly rescanTimers = new Map<string, NodeJS.Timeout>();
+  /**
+   * Live, mutable set of directories chokidar may watch, per folder.
+   *
+   * The `ignored` predicate closes over this exact Set instance, so
+   * adding a key here immediately makes chokidar willing to descend
+   * into that directory. The periodic rescan uses it to pick up
+   * directories that appeared after startup.
+   */
+  private readonly watchableDirs = new Map<string, Set<string>>();
   private tombstoneTimer: NodeJS.Timeout | null = null;
   private readonly debounceMs: number;
   private readonly health = new Map<string, {
@@ -125,6 +151,82 @@ export class WatcherManager {
     }, 30_000);
   }
 
+  /**
+   * Determine the set of directories chokidar should watch.
+   *
+   * Returns a set of normalised (upper-cased, separator-normalised)
+   * absolute directory paths. `undefined` means "don't prune — watch
+   * everything", which is the safe fallback when the pre-walk could
+   * not be completed.
+   *
+   * The set contains:
+   *   - every directory that directly holds at least one file matching
+   *     the folder's whitelist, and
+   *   - every ancestor of those directories up to the watched root,
+   *     because chokidar can only reach a directory by traversing its
+   *     parents.
+   *
+   * Directories outside that set are pruned by the `ignored` predicate,
+   * so chokidar never opens a watch handle on them. On E:\ that is
+   * 1,443 interesting + ~200 ancestors instead of all 41,353
+   * directories.
+   *
+   * The trade-off: a brand-new directory that appears in a location we
+   * pruned will not raise a chokidar event. That is covered by the
+   * periodic rescan (`schedulePeriodicRescan`).
+   */
+  private async computeWatchableDirs(
+    folder: WatchedFolderRecord
+  ): Promise<Set<string> | undefined> {
+    const started = Date.now();
+    try {
+      const filter = effectiveWatchExtensions(folder);
+      const { interestingDirs, allDirs, matchedFiles } = await enumerateWatchTargets(
+        folder.path,
+        folder.recursive,
+        filter
+          ? (relPath) => filter.includes(normalizeExtension(relPath))
+          : undefined
+      );
+
+      if (interestingDirs.size === 0) {
+        // Nothing ingestible on disk yet. Watch only the root so we
+        // still notice the first file that appears.
+        logger.info(
+          { folderId: folder.id, path: folder.path, allDirs: allDirs.size },
+          "watcher: no ingestible files found yet, watching root only"
+        );
+        return new Set([normalizeDirKey(folder.path)]);
+      }
+
+      const expanded = expandToAncestors(interestingDirs, folder.path);
+      const watchable = new Set<string>();
+      for (const dir of expanded) {
+        watchable.add(normalizeDirKey(dir));
+      }
+
+      logger.info(
+        {
+          folderId: folder.id,
+          path: folder.path,
+          allDirs: allDirs.size,
+          interestingDirs: interestingDirs.size,
+          watchableDirs: watchable.size,
+          matchedFiles,
+          elapsedMs: Date.now() - started
+        },
+        "watcher: computed watch targets — chokidar will only hold handles on directories that contain ingestible files"
+      );
+      return watchable;
+    } catch (error) {
+      logger.warn(
+        { folderId: folder.id, path: folder.path, error: (error as Error).message },
+        "watcher: watch-target computation failed, falling back to watching the whole tree"
+      );
+      return undefined;
+    }
+  }
+
   async startOne(folder: WatchedFolderRecord): Promise<void> {
     this.assertEnvironment();
     if (this.watchers.has(folder.id)) {
@@ -200,6 +302,29 @@ export class WatcherManager {
         });
     }
 
+    // Work out which directories are actually worth a watch handle
+    // BEFORE handing the path to chokidar.
+    //
+    // chokidar on Windows opens one `ReadDirectoryChangesW` handle per
+    // directory it traverses. On a drive-root watch that is 41,353
+    // handles for E:\ — and 39,910 of those directories hold no file
+    // that can ever match the whitelist. Measured on the v4 build:
+    // chokidar never emitted `ready` (600 s, 0 `add` events), the
+    // backend leaked handles at ~79/s (117k after 40 min), grew from
+    // 1.6 GB to 5.5 GB RSS and died with a V8 heap OOM — so the
+    // watcher never went live and the UI sat on "扫描文件系统" forever.
+    //
+    // We run one fast directory walk (the same traversal the scan
+    // uses, ~26 s on E:\) to learn which 1,443 directories hold
+    // Office files, then let chokidar watch only those plus their
+    // ancestors. That is a ~25x reduction in watch handles.
+    const watchableDirs = await this.computeWatchableDirs(folder);
+    if (watchableDirs) {
+      // Keep the live reference so the periodic rescan can extend it
+      // in place; the `ignored` predicate reads this same Set.
+      this.watchableDirs.set(folder.id, watchableDirs);
+    }
+
     const watcher = chokidar.watch(folder.path, {
       persistent: true,
       ignoreInitial: true, // we already scanned above
@@ -213,7 +338,14 @@ export class WatcherManager {
       // per second and reached 240k+ before this was added.
       // The predicate matches on whole path segments, so a user
       // directory named e.g. "my-node_modules" is not affected.
-      ignored: makeChokidarIgnoredPredicate()
+      //
+      // 2026-10-30: also gate on the folder's file-extension
+      // whitelist and prune directories that hold nothing ingestible.
+      // See scan-exclusions.ts for the measurements.
+      ignored: makeChokidarIgnoredPredicate(
+        effectiveWatchExtensions(folder),
+        watchableDirs
+      )
     });
 
     const onEvent = (relPath: string, kind: "added" | "updated" | "deleted") => {
@@ -244,21 +376,61 @@ export class WatcherManager {
       this.scheduleHealthCheck(folder);
     }
 
+    // Periodic rescan.
+    //
+    // Because we prune chokidar down to the directories that hold
+    // ingestible files, a directory that appears later in a pruned
+    // part of the tree would never raise an event. The rescan closes
+    // that gap: it re-walks the tree (fast — 26 s on E:\), picks up
+    // any new interesting directories (extending the watchable set
+    // in place and telling chokidar to watch them), and enqueues any
+    // files the manifest has not seen yet.
+    this.schedulePeriodicRescan(folder);
+
     // Wait for chokidar's initial scan to settle before returning. Without this,
     // events that fire in the window between chokidar.watch() returning and
     // chokidar finishing its initial directory enumeration can be silently
     // dropped. We've already done our own startup scan above, so we don't need
     // chokidar's enumeration — we just need to know it's ready to listen.
+    //
+    // 2026-10-30: this promise used to wait forever. On a drive-root watch
+    // chokidar's initial enumeration could run for hours (it was opening a
+    // watch handle on all ~305k non-Office files), so `startOne()` never
+    // returned, the "start watcher" HTTP request hung, and the health
+    // endpoint stopped answering. We now give up after a bounded wait and
+    // let chokidar keep running in the background — a watcher that is
+    // "still enumerating" is far better than one that wedges the API.
+    const readyTimeoutMs = CHOKIDAR_READY_TIMEOUT_MS;
     await new Promise<void>((resolve) => {
-      const onReady = () => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         watcher.off("error", onError);
         resolve();
+      };
+      const onReady = () => {
+        logger.info(
+          { folderId: folder.id, path: folder.path },
+          "watcher: chokidar ready"
+        );
+        finish();
       };
       const onError = (error: Error) => {
         logger.error({ folderId: folder.id, error: error.message }, "watcher: chokidar error during ready");
         // Don't block startup on a transient chokidar error — log it and move on.
-        resolve();
+        finish();
       };
+      const timer = setTimeout(() => {
+        logger.warn(
+          { folderId: folder.id, path: folder.path, timeoutMs: readyTimeoutMs },
+          "watcher: chokidar did not become ready in time, continuing without waiting"
+        );
+        finish();
+      }, readyTimeoutMs);
+      // Don't let the timer keep the process alive on its own.
+      if (typeof timer.unref === "function") timer.unref();
       watcher.once("ready", onReady);
       watcher.once("error", onError);
       logger.info({ folderId: folder.id, path: folder.path }, "watcher: awaiting chokidar ready");
@@ -282,6 +454,12 @@ export class WatcherManager {
       clearInterval(healthTimer);
       this.healthTimers.delete(folderId);
     }
+    const rescanTimer = this.rescanTimers.get(folderId);
+    if (rescanTimer) {
+      clearInterval(rescanTimer);
+      this.rescanTimers.delete(folderId);
+    }
+    this.watchableDirs.delete(folderId);
     // Drop any pending ingest work for this folder — we don't want to
     // continue processing files for a watcher that's been stopped.
     ingestQueue.removeFolder(folderId);
@@ -384,6 +562,142 @@ export class WatcherManager {
     // unref so a hanging health probe never blocks process exit.
     timer.unref?.();
     this.healthTimers.set(folder.id, timer);
+  }
+
+  /**
+   * Schedule the periodic full rescan for a folder.
+   *
+   * The interval is configurable via `SAG_WATCHER_RESCAN_INTERVAL_S`
+   * (default 300 s). Setting it to 0 disables the rescan entirely.
+   */
+  private schedulePeriodicRescan(folder: WatchedFolderRecord): void {
+    const existing = this.rescanTimers.get(folder.id);
+    if (existing) {
+      clearInterval(existing);
+    }
+    const intervalS = readRescanIntervalSeconds();
+    if (intervalS <= 0) {
+      logger.info(
+        { folderId: folder.id },
+        "watcher: periodic rescan disabled"
+      );
+      return;
+    }
+    const timer = setInterval(() => {
+      void this.runPeriodicRescan(folder);
+    }, intervalS * 1000);
+    timer.unref?.();
+    this.rescanTimers.set(folder.id, timer);
+    logger.info(
+      { folderId: folder.id, intervalS },
+      "watcher: periodic rescan scheduled"
+    );
+  }
+
+  /**
+   * One periodic rescan cycle.
+   *
+   * Two jobs:
+   *   1. Re-compute the set of directories that hold ingestible files
+   *      and extend the live watchable set, so a directory created
+   *      after startup becomes watchable. Any genuinely new directory
+   *      is handed to chokidar with `watcher.add()`.
+   *   2. Diff the tree against the manifest and enqueue anything new
+   *      or changed. The manifest's mtime fast path means unchanged
+   *      files are not re-read, so the expensive part is the tree
+   *      walk, not the hashing.
+   */
+  private async runPeriodicRescan(folder: WatchedFolderRecord): Promise<void> {
+    if (!this.watchers.has(folder.id)) {
+      const t = this.rescanTimers.get(folder.id);
+      if (t) {
+        clearInterval(t);
+        this.rescanTimers.delete(folder.id);
+      }
+      return;
+    }
+    const started = Date.now();
+    try {
+      const refreshed = await getFolder(folder.id, folder.tenantId);
+      if (!refreshed) return;
+
+      // 1. Extend the watchable directory set.
+      const live = this.watchableDirs.get(folder.id);
+      if (live) {
+        const filter = effectiveWatchExtensions(refreshed);
+        const { interestingDirs } = await enumerateWatchTargets(
+          refreshed.path,
+          refreshed.recursive,
+          filter ? (relPath) => filter.includes(normalizeExtension(relPath)) : undefined
+        );
+        const expanded = expandToAncestors(interestingDirs, refreshed.path);
+        const added: string[] = [];
+        for (const dir of expanded) {
+          const key = normalizeDirKey(dir);
+          if (!live.has(key)) {
+            live.add(key);
+            added.push(dir);
+          }
+        }
+        if (added.length > 0) {
+          const watcher = this.watchers.get(folder.id);
+          if (watcher) {
+            try {
+              watcher.add(added);
+            } catch (error) {
+              logger.warn(
+                { folderId: folder.id, error: (error as Error).message },
+                "watcher: chokidar could not attach to newly discovered directories"
+              );
+            }
+          }
+          logger.info(
+            { folderId: folder.id, addedDirs: added.length },
+            "watcher: rescan discovered new directories with ingestible files"
+          );
+        }
+      }
+
+      // 2. Diff against the manifest and enqueue deltas.
+      const existing = await getManifest(refreshed.id, undefined);
+      const scan = await scanFolder(refreshed, existing);
+      let enqueued = 0;
+      for (const entry of scan.added) {
+        ingestQueue.enqueue(makeQueueItem(refreshed, entry, "added"));
+        enqueued += 1;
+      }
+      for (const entry of scan.updated) {
+        ingestQueue.enqueue(makeQueueItem(refreshed, entry, "updated"));
+        enqueued += 1;
+      }
+      for (const relPath of scan.deleted) {
+        ingestQueue.enqueue({
+          key: `${refreshed.id}::${relPath}`,
+          folderId: refreshed.id,
+          tenantId: refreshed.tenantId,
+          kind: "deleted",
+          relPath,
+          enqueuedAt: Date.now()
+        } as QueueItem);
+        enqueued += 1;
+      }
+      logger.info(
+        {
+          folderId: folder.id,
+          added: scan.added.length,
+          updated: scan.updated.length,
+          deleted: scan.deleted.length,
+          enqueued,
+          elapsedMs: Date.now() - started
+        },
+        "watcher: periodic rescan complete"
+      );
+    } catch (error) {
+      logger.error(
+        { folderId: folder.id, error: (error as Error).message },
+        "watcher: periodic rescan failed"
+      );
+    }
   }
 
   private async runHealthCheck(folder: WatchedFolderRecord): Promise<void> {
@@ -631,6 +945,74 @@ export async function retryAllFailedEntries(
 }
 
 export const watcherManager = new WatcherManager();
+
+/**
+ * Normalise a directory path so set membership is reliable.
+ *
+ * chokidar normalises every path to forward slashes before handing it
+ * to the `ignored` predicate, while our own traversal produces the
+ * Windows form. `normalizeWatchKey` folds both to the same shape and
+ * upper-cases them (Windows paths are case-insensitive).
+ */
+function normalizeDirKey(p: string): string {
+  return normalizeWatchKey(p);
+}
+
+/**
+ * Lower-case extension of a relative path, with the leading dot.
+ */
+function normalizeExtension(relPath: string): string {
+  const slash = Math.max(relPath.lastIndexOf("/"), relPath.lastIndexOf("\\"));
+  const basename = slash >= 0 ? relPath.slice(slash + 1) : relPath;
+  const dot = basename.lastIndexOf(".");
+  if (dot <= 0) return "";
+  return basename.slice(dot).toLowerCase();
+}
+
+/**
+ * How often the periodic rescan runs, in seconds.
+ *
+ * Defaults to 300 s (5 minutes). `SAG_WATCHER_RESCAN_INTERVAL_S=0`
+ * disables it. The rescan is what picks up files and directories that
+ * appear in parts of the tree chokidar is not watching.
+ */
+function readRescanIntervalSeconds(): number {
+  const raw = process.env.SAG_WATCHER_RESCAN_INTERVAL_S;
+  if (raw === undefined || raw === "") {
+    return 300;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 300;
+  }
+  return parsed;
+}
+
+/**
+ * The file extensions chokidar should track for a watched folder.
+ *
+ * This mirrors the logic in `analyzer.ts::scanFolder`: a folder that
+ * sets its own whitelist uses it verbatim; a folder that doesn't falls
+ * back to `DEFAULT_SUPPORTED_EXTENSIONS`.
+ *
+ * Returning `undefined` means "don't filter by extension" — used when
+ * the effective whitelist is empty, because an empty whitelist in the
+ * ingest pipeline means "accept everything" and chokidar must then
+ * track every file to stay consistent with the manifest.
+ */
+export function effectiveWatchExtensions(
+  folder: Pick<WatchedFolderRecord, "filetypeFilter">
+): string[] | undefined {
+  const userFilter = folder.filetypeFilter ?? {};
+  const whitelist =
+    userFilter.whitelist && userFilter.whitelist.length > 0
+      ? userFilter.whitelist
+      : DEFAULT_SUPPORTED_EXTENSIONS;
+  if (!whitelist || whitelist.length === 0) {
+    return undefined;
+  }
+  return whitelist;
+}
 
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
