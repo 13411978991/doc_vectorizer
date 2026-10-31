@@ -48,6 +48,26 @@ let workerInstance: Worker | null = null;
 let workerInitPromise: Promise<void> | null = null;
 const pending = new Map<string, Pending>();
 
+/**
+ * How long to wait for the embedding worker to answer its boot ping.
+ *
+ * Defaults to 60 s. Override with `SAG_EMBEDDING_WORKER_BOOT_TIMEOUT_MS`.
+ *
+ * The fallback when this expires is the IN-PROCESS ONNX path, which
+ * blocks the main event loop for the whole batch — so waiting longer
+ * is strictly better than falling back early. See the watchdog below.
+ */
+function readBootTimeoutMs(): number {
+  const raw = process.env.SAG_EMBEDDING_WORKER_BOOT_TIMEOUT_MS;
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 60_000;
+}
+
 function workerSourcePath(): string {
   // Look up the worker source in this order:
   //   0. $SAG_NATIVE_CACHE_DIR/__bundle__/sag.embedding-worker.cjs
@@ -428,15 +448,32 @@ function ensureWorker(): Promise<void> {
     });
     const ping: WorkerRequest = { id: initId, op: "ping" };
     w.postMessage(ping);
-    // Reject if the worker never responds within a sane window —
-    // typically <100ms but allow 5s for slow CI / disk.
+    // Reject if the worker never responds within a sane window.
+    //
+    // This guards a plain "ping" round-trip, not the model load — a
+    // ping normally answers in <100 ms. But the worker thread has to be
+    // SCHEDULED first, and on a busy machine (an ingest already running
+    // at boot, an antivirus scan, a spinning disk) that can take a while.
+    //
+    // The 5 s watchdog this used to have was far too aggressive: when
+    // it fired, the caller fell back to IN-PROCESS ONNX, which runs the
+    // 311 MB BGE model on the MAIN thread and freezes the event loop —
+    // /health stops answering, the watcher's directory walk crawls, and
+    // the UI looks hung. That is a much worse failure than waiting a
+    // little longer for the worker to answer its ping.
+    //
+    // Measured 2026-10-31: 12 consecutive 5 s timeouts on a loaded
+    // box, every one of them dropping into the in-process path.
+    // 60 s is generous but still bounded, and the in-process fallback
+    // remains available for a genuinely broken worker.
+    const bootTimeoutMs = readBootTimeoutMs();
     const watchdog = setTimeout(() => {
       if (workerInitPromise) {
         workerInitPromise = null;
-        reject(new Error("embedding worker boot timed out after 5s"));
+        reject(new Error(`embedding worker boot timed out after ${bootTimeoutMs}ms`));
         teardownWorker("boot timeout");
       }
-    }, 5000);
+    }, bootTimeoutMs);
     // Once the ping resolves, clear the watchdog.
     const origResolve = pending.get(initId)!.resolve;
     pending.get(initId)!.resolve = (v) => {
@@ -444,8 +481,7 @@ function ensureWorker(): Promise<void> {
       origResolve(v);
     };
     // Suppress unused-variable warning — `ping` is kept around for
-    // debugging if we ever wire a structured postMessage signature.
-    void ping;
+    // debugging if we ever wire a structured postMessage signature.    void ping;
     void initId;
       })
   );
