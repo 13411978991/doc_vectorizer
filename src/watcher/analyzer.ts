@@ -295,6 +295,19 @@ export async function enumerateWatchTargets(
         }
         matchedFiles++;
         interestingDirs.add(dir);
+        // Progress visibility (2026-10-31).
+        //
+        // This walk is the slow part of starting a watcher on a drive
+        // root, and it used to be completely silent — on a loaded
+        // machine it was observed running for 13+ minutes with no log
+        // line at all, which is indistinguishable from "hung". Same
+        // lesson as the `scan walking…` line added for enumerateFiles.
+        if (matchedFiles % 500 === 0) {
+          logger.info(
+            { root, dirs: seen.size, interestingDirs: interestingDirs.size, matchedFiles },
+            "watcher: computing watch targets…"
+          );
+        }
       }
     }
   };

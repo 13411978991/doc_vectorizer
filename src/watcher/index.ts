@@ -49,6 +49,17 @@ import type { WatchedFolderRecord } from "./types.js";
  */
 const CHOKIDAR_READY_TIMEOUT_MS = 120_000;
 
+/**
+ * Upper bound on the watch-target directory walk.
+ *
+ * On an idle machine this is ~23-26 s on a drive root. The cap exists
+ * because the walk competes with the rest of the process: when the
+ * ingest was already running it was once observed taking 28 minutes,
+ * and the watcher never started. On timeout we watch the root only and
+ * let the periodic rescan extend the set.
+ */
+const WATCH_TARGET_WALK_TIMEOUT_MS = 300_000;
+
 export class WatcherManager {
   private readonly watchers = new Map<string, chokidar.FSWatcher>();
   private readonly debounceTimers = new Map<string, NodeJS.Timeout>();
@@ -181,13 +192,44 @@ export class WatcherManager {
     const started = Date.now();
     try {
       const filter = effectiveWatchExtensions(folder);
-      const { interestingDirs, allDirs, matchedFiles } = await enumerateWatchTargets(
+
+      // Bounded walk.
+      //
+      // The walk is a plain readdir traversal — 23 s on E:\ with an
+      // idle machine. But it competes with whatever else the process
+      // is doing, and on a loaded box it was once observed taking 28
+      // minutes. A watcher that never finishes starting is worse than
+      // one that starts watching the root only, so we cap the wait and
+      // fall back. The periodic rescan extends the set afterwards.
+      const walk = enumerateWatchTargets(
         folder.path,
         folder.recursive,
         filter
           ? (relPath) => filter.includes(normalizeExtension(relPath))
           : undefined
       );
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), WATCH_TARGET_WALK_TIMEOUT_MS);
+        timer.unref?.();
+      });
+      const result = await Promise.race([walk, timeout]);
+      if (timer) clearTimeout(timer);
+
+      if (result === null) {
+        logger.warn(
+          {
+            folderId: folder.id,
+            path: folder.path,
+            timeoutMs: WATCH_TARGET_WALK_TIMEOUT_MS,
+            elapsedMs: Date.now() - started
+          },
+          "watcher: watch-target walk timed out — watching the root only for now; the periodic rescan will extend the set"
+        );
+        return new Set([normalizeDirKey(folder.path)]);
+      }
+
+      const { interestingDirs, allDirs, matchedFiles } = result;
 
       if (interestingDirs.size === 0) {
         // Nothing ingestible on disk yet. Watch only the root so we
@@ -276,6 +318,7 @@ export class WatcherManager {
     // < 30 seconds ago), don't fire a second startup scan. Two startup
     // scans racing against the same manifest causes spurious "added"
     // rows because the first run hasn't written its manifest updates yet.
+    let pendingStartupSync = false;
     const recentRun = await getLatestSyncRun(folder.id);
     if (
       recentRun &&
@@ -293,13 +336,10 @@ export class WatcherManager {
       // actual work in the background. This used to block the watcher
       // startup until every file had been ingested — the queue removes
       // that blocking cost while preserving the run-history feature.
-      void syncFolder(folder.id, "startup", folder.tenantId, { waitForCompletion: false })
-        .catch((error) => {
-          logger.error(
-            { folderId: folder.id, error: (error as Error).message },
-            "watcher: startup sync failed"
-          );
-        });
+      //
+      // It is fired a few lines further down, AFTER the watch-target
+      // walk — see the ordering note there.
+      pendingStartupSync = true;
     }
 
     // Work out which directories are actually worth a watch handle
@@ -323,6 +363,26 @@ export class WatcherManager {
       // Keep the live reference so the periodic rescan can extend it
       // in place; the `ignored` predicate reads this same Set.
       this.watchableDirs.set(folder.id, watchableDirs);
+    }
+
+    // NOW fire the startup scan.
+    //
+    // It must not start before the watch-target walk above. The scan
+    // begins ingesting immediately, and the embedding worker then
+    // occupies every core — which starves the concurrent readdir walk.
+    // Measured on the live box (2026-10-31): with the sync fired
+    // first, the scan's own enumeration took 28m46s to reach 2,000
+    // files, while the SAME walk standalone takes 23 s for the whole
+    // 41,364-directory tree. The watcher never finished starting and
+    // the "start watcher" request sat until the client gave up.
+    if (pendingStartupSync) {
+      void syncFolder(folder.id, "startup", folder.tenantId, { waitForCompletion: false })
+        .catch((error) => {
+          logger.error(
+            { folderId: folder.id, error: (error as Error).message },
+            "watcher: startup sync failed"
+          );
+        });
     }
 
     const watcher = chokidar.watch(folder.path, {
