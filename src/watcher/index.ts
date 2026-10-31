@@ -365,25 +365,8 @@ export class WatcherManager {
       this.watchableDirs.set(folder.id, watchableDirs);
     }
 
-    // NOW fire the startup scan.
-    //
-    // It must not start before the watch-target walk above. The scan
-    // begins ingesting immediately, and the embedding worker then
-    // occupies every core — which starves the concurrent readdir walk.
-    // Measured on the live box (2026-10-31): with the sync fired
-    // first, the scan's own enumeration took 28m46s to reach 2,000
-    // files, while the SAME walk standalone takes 23 s for the whole
-    // 41,364-directory tree. The watcher never finished starting and
-    // the "start watcher" request sat until the client gave up.
-    if (pendingStartupSync) {
-      void syncFolder(folder.id, "startup", folder.tenantId, { waitForCompletion: false })
-        .catch((error) => {
-          logger.error(
-            { folderId: folder.id, error: (error as Error).message },
-            "watcher: startup sync failed"
-          );
-        });
-    }
+    // The startup scan is fired at the very end of this method, AFTER
+    // chokidar is live — see the note there.
 
     const watcher = chokidar.watch(folder.path, {
       persistent: true,
@@ -495,6 +478,31 @@ export class WatcherManager {
       watcher.once("error", onError);
       logger.info({ folderId: folder.id, path: folder.path }, "watcher: awaiting chokidar ready");
     });
+
+    // FINALLY fire the startup scan.
+    //
+    // The ingest must not compete with the watcher's own startup. Both
+    // of the startup phases do directory I/O, and the scan immediately
+    // begins embedding, which occupies every core and starves them:
+    //
+    //   walk before sync : 28 s   (vs 28m46s when the sync ran first)
+    //   chokidar ready   : 6m46s (vs 40 s on an idle machine)
+    //
+    // Measured on the live box (2026-10-31), both of those numbers
+    // improved by moving the sync to here: the watcher is fully live
+    // in ~70 s instead of never finishing.
+    //
+    // The sync is still fire-and-forget — it must not block the
+    // watcher from being usable.
+    if (pendingStartupSync) {
+      void syncFolder(folder.id, "startup", folder.tenantId, { waitForCompletion: false })
+        .catch((error) => {
+          logger.error(
+            { folderId: folder.id, error: (error as Error).message },
+            "watcher: startup sync failed"
+          );
+        });
+    }
   }
 
   async stopOne(folderId: string): Promise<void> {
