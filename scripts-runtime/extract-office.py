@@ -92,10 +92,27 @@ def read_xlsx(path: str, max_rows: int, max_cols: int) -> str:
     return "\n".join(out)
 
 
-def read_xls(path: str) -> str:
+def read_xls(path: str, max_rows: int, max_cols: int) -> str:
+    """Read a legacy .xls workbook.
+
+    The row / column caps and the detail-sheet skip are the SAME ones
+    read_xlsx() applies. They used to be missing here, and that was a
+    serious problem (found 2026-10-31 on a live drive):
+
+      * read_xls() emitted EVERY row of EVERY sheet with no cap at all
+      * a 55 MB legacy .xls produced ~50 MB of markdown
+      * which the chunker turned into 246,499 chunks
+      * the embedding worker then had to vectorise all of them at
+        ~0.1 texts/s on this box -- i.e. WEEKS of CPU for one file
+      * and it held an ingest slot the whole time, so the rest of the
+        queue (6,400+ files) never moved
+
+    The .xlsx path was capped all along; .xls was simply forgotten.
+    """
     import xlrd
 
     bk = xlrd.open_workbook(path)
+    file_name = path.lower()
     out: list[str] = []
     for si in range(bk.nsheets):
         sh = bk.sheet_by_index(si)
@@ -103,12 +120,29 @@ def read_xls(path: str) -> str:
         if sh.nrows == 0:
             out.append("*(empty sheet)*\n")
             continue
-        header = [str(sh.cell_value(0, ci)) for ci in range(sh.ncols)]
+
+        # Same detail-sheet skip as read_xlsx: big tables are detail
+        # data, not knowledge-base content.
+        keyword_match = _matches_detail_keyword(sh.name) or _matches_detail_keyword(file_name)
+        if sh.nrows > max_rows or sh.ncols > max_cols or keyword_match:
+            reason = keyword_match if keyword_match else f"{sh.nrows} rows x {sh.ncols} cols"
+            out.append(f"*(sheet skipped: {reason} - treated as detail data, not vectorized)*\n")
+            continue
+
+        n_cols = min(sh.ncols, max_cols)
+        header = [str(sh.cell_value(0, ci)) for ci in range(n_cols)]
         out.append("| " + " | ".join(header) + " |")
-        out.append("| " + " | ".join(["---"] * sh.ncols) + " |")
-        for ri in range(1, sh.nrows):
-            row = [str(sh.cell_value(ri, ci)) for ci in range(sh.ncols)]
+        out.append("| " + " | ".join(["---"] * n_cols) + " |")
+        body_rows = sh.nrows - 1
+        for ri in range(1, min(sh.nrows, 1 + max_rows)):
+            row = [str(sh.cell_value(ri, ci)) for ci in range(n_cols)]
             out.append("| " + " | ".join(row) + " |")
+        if body_rows > max_rows:
+            omitted = body_rows - max_rows
+            out.append(
+                f"| _... {omitted} more rows omitted (capped at {max_rows} per sheet "
+                f"to bound embedding cost) ..._ |\n"
+            )
         out.append("")
     return "\n".join(out)
 
@@ -137,7 +171,7 @@ def extract(path: str, max_rows: int, max_cols: int) -> str:
     if ext == ".xlsx":
         return read_xlsx(path, max_rows, max_cols)
     if ext == ".xls":
-        return read_xls(path)
+        return read_xls(path, max_rows, max_cols)
     if ext == ".docx":
         return read_docx(path)
     if ext == ".pptx":

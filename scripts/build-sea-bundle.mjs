@@ -1403,6 +1403,89 @@ function stepEntry() {
   const scriptsRuntimeSrcDir = join(ROOT, "scripts-runtime");
   const sagReadersSrcDir = join(ROOT, "sag-readers");
   const scriptsMap = {};
+
+  // Consistency gate (2026-10-31).
+  //
+  // `scripts/` and `scripts-runtime/` hold the same helper files: the
+  // first is what a dev-mode checkout runs (findHelper() falls back to
+  // <cwd>/scripts/extract-office.py), the second is what actually gets
+  // SHIPPED inside the exe. They were byte-identical until a fix was
+  // applied to `scripts/extract-office.py` only — so the packaged build
+  // kept the old, uncapped .xls reader and the fix silently did nothing
+  // in production.
+  //
+  // Two copies of one file WILL drift. Fail the build instead.
+  //
+  // Only NEW drift is fatal. `com-extract.ps1` has diverged since the
+  // initial commit (dev has the P1 WPS-ProgID ordering fix, the shipped
+  // copy has the newer P31 one) — that pre-existing difference is
+  // reported but does not block the build. What must not happen is a
+  // file that WAS identical becoming different.
+  {
+    const devDir = join(ROOT, "scripts");
+    const drift = [];
+    const preexisting = [];
+    // Was this file identical in both trees at HEAD? Only then does a
+    // working-tree difference count as newly introduced drift.
+    const identicalAtHead = (file) => {
+      try {
+        const a = execFileSync("git", ["-C", ROOT, "show", `HEAD:scripts/${file}`], {
+          encoding: "buffer",
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        const b = execFileSync("git", ["-C", ROOT, "show", `HEAD:scripts-runtime/${file}`], {
+          encoding: "buffer",
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        return a.equals(b);
+      } catch {
+        return null; // git unavailable / file not tracked
+      }
+    };
+    if (existsSync(devDir) && existsSync(scriptsRuntimeSrcDir)) {
+      for (const f of readdirSync(scriptsRuntimeSrcDir)) {
+        const full = join(scriptsRuntimeSrcDir, f);
+        if (!existsSync(full) || !statSync(full).isFile()) continue;
+        const devFull = join(devDir, f);
+        // Only compare files that exist in BOTH trees. `scripts/` also
+        // holds the build tooling (build-sea-bundle.mjs etc.) and does
+        // not carry every runtime helper (requirements.txt), so a
+        // missing counterpart is not drift.
+        if (!existsSync(devFull)) {
+          continue;
+        }
+        const a = readFileSync(devFull);
+        const b = readFileSync(full);
+        if (a.equals(b)) {
+          continue;
+        }
+        const wasSame = identicalAtHead(f);
+        if (wasSame === true) {
+          drift.push(`${f}: scripts/ and scripts-runtime/ differ (they were identical at HEAD)`);
+        } else {
+          preexisting.push(
+            `${f}: scripts/ and scripts-runtime/ differ (pre-existing divergence, not introduced by this change)`
+          );
+        }
+      }
+    }
+    if (preexisting.length > 0) {
+      log(
+        "! scripts/ vs scripts-runtime/ pre-existing divergence (not fatal):\n    - " +
+          preexisting.join("\n    - ")
+      );
+    }
+    if (drift.length > 0) {
+      throw new Error(
+        "scripts/ and scripts-runtime/ have drifted apart — the packaged " +
+        "build ships scripts-runtime/, so a fix applied only to scripts/ " +
+        "would be lost in production:\n  - " +
+        drift.join("\n  - ") +
+        "\nCopy the changed files across (they are meant to be identical)."
+      );
+    }
+  }
+
   if (existsSync(scriptsRuntimeSrcDir)) {
     for (const f of readdirSync(scriptsRuntimeSrcDir)) {
       const full = join(scriptsRuntimeSrcDir, f);
